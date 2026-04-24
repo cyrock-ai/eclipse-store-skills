@@ -1,0 +1,16 @@
+{
+  "name": "eclipse-store-claude",
+  "metadata": {
+    "description": "Eclipse Store and Eclipse Serializer development skills for Claude Code"
+  },
+  "owner": {
+    "name": "CYROCK.AI"
+  },
+  "plugins": [
+    {
+      "name": "eclipse-store-claude",
+      "source": "./",
+      "description": "Skills for building Eclipse Store and Eclipse Serializer applications — storage lifecycle, Lazy<T>, GigaMap, JCache, Spring Boot integration, schema evolution, and custom type handlers."
+    }
+  ]
+}

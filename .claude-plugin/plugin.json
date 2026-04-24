@@ -1,0 +1,9 @@
+{
+  "name": "eclipse-store-claude",
+  "version": "0.1.0",
+  "description": "Skills for building high-quality Eclipse Store and Eclipse Serializer applications in Java — storage lifecycle, Lazy<T>, GigaMap, JCache, Spring Boot integration, schema evolution, and custom type handlers.",
+  "author": {
+    "name": "CYROCK.AI"
+  },
+  "keywords": ["eclipse-store", "eclipse-serializer", "java", "persistence", "gigamap", "jcache", "spring-boot"]
+}
