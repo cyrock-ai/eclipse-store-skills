@@ -203,6 +203,14 @@ housekeeping-increase-amount = 50ms
 Adaptive housekeeping raises the budget when work is persistently piling up, up to
 the `maximum-time-budget` ceiling.
 
+**Production recommendation.** On for write-heavy workloads; the fixed default
+is sufficient for read-heavy or low-write applications. The fixed default
+silently lets disk usage grow past what the data warrants when the writer
+outpaces housekeeping. See `configuration` →
+`references/dev-test-staging-prod.md` for the per-environment matrix
+(staging should match prod so the pause behaviour is exercised
+representatively before release).
+
 ## Anti-patterns (do NOT do this)
 
 ### Anti-pattern 1 — "Storing the deleted object"

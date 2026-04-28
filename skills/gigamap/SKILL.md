@@ -625,24 +625,43 @@ thousands of tiny segments and metadata overhead.
 1. **Indices must be declared up front.** Changing them means a migration — you
    cannot add an index without scanning the data.
 2. **Updates must go through `update`/`apply`.** Direct mutation breaks indices.
-3. **`gigaMap.store()` is the only safe persistence path** unless you wrap
-   `storageManager.store(map)` in `synchronized(map)`.
-4. **Iterator lifecycle.** Read lock held until close. Always try-with-resources.
-5. **Null forbidden.** Use sentinel values if you need "absent".
-6. **Identity index: strongly recommended, not required.** Without it, you get
+3. **Always prefer `gigaMap.store()` over `storageManager.store(gigaMap)`.**
+   `gigaMap.store()` acquires the GigaMap's internal lock for the duration of
+   the store; `storageManager.store(gigaMap)` does **not**. Concurrent
+   mutations during the latter walk a structure that is changing under the
+   serializer — the GigaMap's internal state becomes inconsistent and the
+   store fails. (Eclipse Store can detect this case and throw, which makes it
+   easier to spot than the silent variants.)
+4. **The GigaMap's internal lock covers GigaMap operations only.** Stored
+   *elements* (the values held in the GigaMap and any objects they reference)
+   can still be mutated by another thread during `gigaMap.store()` — the
+   GigaMap itself remains fine, but the persisted element graph may be
+   inconsistent. If a business operation modifies a GigaMap *and* other parts
+   of the object graph atomically, you still need an application-level lock
+   spanning both. See `concurrency-and-locking`.
+5. **Iterator lifecycle.** Read lock is held until the iterator is closed. A
+   leaked iterator holds the read lock open and starves writers. Always
+   try-with-resources for any iterator returned from a GigaMap (including
+   query results).
+6. **Null forbidden.** Use sentinel values if you need "absent".
+7. **Identity index: strongly recommended, not required.** Without it, you get
    correct behaviour but far worse performance on removes/updates.
-7. **Query results are views.** They iterate lazily. Don't assume stability
+8. **Query results are views.** They iterate lazily. Don't assume stability
    across mutation.
-8. **Lucene and vector indexes are separate artifacts.** They come with their own
+9. **Lucene and vector indexes are separate artifacts.** They come with their own
    dependency footprint; don't pull them in "just in case".
-9. **Sub-queries must come from the same GigaMap.** Combining two queries from
-   two different maps is invalid.
+10. **Sub-queries must come from the same GigaMap.** Combining two queries from
+    two different maps is invalid.
 
 ## Interactions with other skills
 
 - **`root-and-object-graph`** — GigaMap usually lives as a root-level field.
 - **`storing-data`** — use `gigaMap.store()`; the generic `storageManager.store()`
   rules do not fully apply.
+- **`concurrency-and-locking`** — the canonical treatment of thread-safety for
+  Eclipse Store. GigaMap's internal RW lock makes individual operations atomic,
+  but cross-aggregate atomicity (a GigaMap mutation alongside other graph
+  changes) still needs an application-level lock.
 - **`lazy-loading`** — GigaMap is internally lazy; you don't need `Lazy<>`
   around it. Wrapping in `Lazy<GigaMap<E>>` is wrong — GigaMap handles its own
   segment loading.

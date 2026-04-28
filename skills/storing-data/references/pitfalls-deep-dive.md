@@ -140,10 +140,24 @@ s.store(root.customers());
 
 **Symptom.** Nothing on disk.
 
-**Root cause.** `Storer.store()` enqueues. Data lands only on `commit()`.
+**Root cause.** `Storer.store()` enqueues; the buffered bytes are held in memory.
+Without `commit()`, the buffered data is discarded — the store had no effect on
+disk.
 
 **Fix.** Always commit. Or don't use a manual `Storer` — use
-`storage.store(...)` which commits implicitly.
+`storage.store(...)`, which creates a default storer and commits it for you.
+
+**Important — do not use try-with-resources.** `Storer` is **not**
+`AutoCloseable`. The only `AutoCloseable` storer is `BatchStorer`, which flushes
+on close.
+
+```java
+// WRONG — Storer is not AutoCloseable; this does not compile in modern JDKs
+// and would discard the data even if it did.
+try (Storer s = storage.createStorer()) {
+    s.store(root.customers());
+}
+```
 
 ## 8. BatchStorer `build()` throws
 
@@ -256,3 +270,71 @@ s.store(root.customers());
 s.store(root.orders());
 s.commit();
 ```
+
+## 14. Convenience methods assumed to be eager
+
+**Reproducer.**
+
+```java
+// Hoping this re-walks the entire reachable graph
+storage.store(root);
+```
+
+**Symptom.** Mutations to deeply-nested already-registered objects are still
+missing on the next load, even though the user "stored the root".
+
+**Root cause.** `store`, `storeAll`, and `storeRoot` on the manager are
+**always lazy**. There is no flag to make them eager. They internally create
+a default (lazy) storer and commit it for you.
+
+**Fix.** Create the storer explicitly:
+
+```java
+Storer eager = storage.createEagerStorer();
+eager.store(root);
+eager.commit();
+```
+
+Or, more surgically, store only the modified objects directly. Or register a
+`PersistenceEagerStoringFieldEvaluator` to mark just the problematic fields
+as eager-traversed.
+
+## 15. Sharing a `Storer` across threads
+
+**Reproducer.**
+
+```java
+Storer storer = storage.createStorer();    // built once, shared across threads
+
+ExecutorService pool = Executors.newFixedThreadPool(4);
+for (int i = 0; i < 1_000; i++) {
+    final int n = i;
+    pool.submit(() -> storer.store(new Order(n)));
+}
+storer.commit();
+```
+
+**Symptom.** Random `IllegalStateException`, intermittent corruption of the
+persistent context, missing objects on disk, occasional NPEs from inside the
+storer's internal buffers.
+
+**Root cause.** `Storer` is single-threaded internal state — register buffers,
+type handlers, the registry view. Concurrent `store()` calls race on those
+internals.
+
+**Fix.** Each thread that wants to commit gets its own `Storer`.
+
+```java
+ExecutorService pool = Executors.newFixedThreadPool(4);
+for (int i = 0; i < 1_000; i++) {
+    final int n = i;
+    pool.submit(() -> {
+        Storer s = storage.createStorer();    // per-thread
+        s.store(new Order(n));
+        s.commit();
+    });
+}
+```
+
+The same applies to `createLazyStorer`, `createEagerStorer`, and `BatchStorer`.
+See `concurrency-and-locking` for the full thread-safety matrix.

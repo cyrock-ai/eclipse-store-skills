@@ -127,6 +127,16 @@ Without an explicit name, `@Read`/`@Write` share a single global
 `ReentrantReadWriteLock`. With `@Mutex("orders")`, orders-related methods are
 serialized independently of customers.
 
+**The contract.** This is the declarative form of the rule from
+`concurrency-and-locking`: the lock spans both the mutation **and** the
+`store()` call. Both must be inside the annotated method body. A method that
+mutates and returns, with `store()` deferred to a caller, is broken even if
+the caller is also annotated — the lock has been released and re-acquired
+between the two steps, and another thread can interleave.
+
+Re-entrance works: a `@Write` method calling another `@Write` method on the
+same `@Mutex` does not deadlock (`ReentrantReadWriteLock` allows it).
+
 ## Idiomatic patterns
 
 ### Pattern A — Minimal setup
@@ -266,7 +276,15 @@ org.eclipse.store.rest.enabled=true
 ```
 
 Adds a `/store-console` HTTP endpoint for browsing the object graph. Useful for
-ops debugging. Do not expose to the public internet.
+ops debugging.
+
+**In production:** off by default. If you need it for operations, place it
+behind authentication (Spring Security or equivalent) and restrict it to an
+internal network. The protocol is read-only, but the data exposed is your
+application's data — the same access controls that govern the application as
+a whole must govern this endpoint. The bundled Client GUI is a development
+tool and should not be exposed publicly. See `configuration` →
+`references/dev-test-staging-prod.md` for the per-environment matrix.
 
 ## Anti-patterns (do NOT do this)
 
@@ -376,7 +394,11 @@ need a manual `Storer` to persist both atomically).
 5. **Relaxed property binding works but be consistent.** Pick either kebab-case
    (`storage-directory`) or camelCase (`storageDirectory`); don't mix within
    one profile file.
-6. **REST console is read-only.** Writes via the console are not supported.
+6. **REST console: protocol is read-only, data is not.** Writes via the
+   console are not supported, but the data exposed is your application's data.
+   The same access controls (auth, network isolation) that govern the
+   application must govern this endpoint. Off by default in production; only
+   enable behind authentication and an internal network.
 7. **Cloud SDK version compatibility.** Spring Boot may pull in an older S3 SDK;
    the `afs-aws-s3` artifact doesn't pin one. Verify compatibility; override
    in your parent pom if needed.
@@ -391,9 +413,16 @@ need a manual `Storer` to persist both atomically).
 - **`root-and-object-graph`** — same design rules; Spring cares about
   constructors.
 - **`storing-data`** — same `store(...)` rules. `@Transactional` irrelevant.
+- **`concurrency-and-locking`** — the conceptual basis for `@Read` /
+  `@Write` / `@Mutex`. The AOP layer is the declarative form of the rule
+  "mutate + store under the same lock"; the canonical treatment, the
+  thread-safety matrix, the strategy ladder, and the GigaMap-specific story
+  all live there.
 - **`configuration`** — the underlying config properties are the same, but the
   property **prefix differs**: Spring uses `org.eclipse.store.*`; standalone uses
-  the bare property names.
+  the bare property names. Per-environment recommendations (Dev / Test /
+  Staging / Prod for backups, channel count, JMX, REST) are documented
+  there.
 - **`custom-type-handlers`** — register via `StorageContextInitializer`.
 - **`storage-targets-afs`** — cloud credentials flow through Spring properties,
   routed into the AFS layer automatically.

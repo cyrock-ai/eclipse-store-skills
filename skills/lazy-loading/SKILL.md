@@ -59,8 +59,12 @@ type is the extension point.
 - `LazyArrayList<E>` / `LazyHashMap<K,V>` / `LazyHashSet<E>` — collections stored in
   segments, where segments are themselves lazy. You use them like normal collections;
   they load segments on demand.
-- Lazy storing (`createLazyStorer`) — **different concept**. That is about what gets
-  written. See `storing-data`.
+- Lazy *storing* (`createLazyStorer`) — **different concept that shares a word**.
+  Lazy *loading* (this skill) defers reading objects from storage into RAM until
+  they are accessed. Lazy *storing* controls how `store()` traverses the object
+  graph when *writing* — specifically, whether already-registered child
+  references are descended into or skipped. Two unrelated mechanisms; do not
+  conflate them. See `storing-data` for the storing-side treatment.
 
 ## Core API
 

@@ -183,7 +183,9 @@ EmbeddedStorageConfiguration.load()
 ### Pattern E — Read-only storage
 
 Use when you need to *read* data that another process owns, or for reporting replicas
-created by copying the live directory. **Limitations** (from upstream docs):
+created by copying the live directory. **Production**: only for read replicas /
+snapshot inspection — see the best-practices section below for per-environment
+guidance. **Limitations** (from upstream docs):
 
 - `.store()` throws on any call.
 - Housekeeping does not run (otherwise it would conflict with the owning writer).
@@ -322,6 +324,49 @@ housekeeping-time-budget = 1us
 Housekeeping is "best effort" — it completes at least one unit per cycle. A 1µs budget
 doesn't stop it from running; it just means it will exceed the budget.
 
+## Best practices: Dev / Test / Staging / Prod
+
+Eclipse Store ships with conservative, frictionless defaults so getting started is a
+one-liner. Several operational features are intentionally **off by default** — turning
+them on globally would be a breaking change for existing apps, and most carry a small
+cost (extra disk, extra setup, slower startup) that is only worth paying once you
+leave a developer's machine.
+
+The columns are not interchangeable. **Test** covers tests targeting application
+logic (unit, fast integration); **Staging** covers tests targeting the production
+deployment itself (release validation, dress-rehearsal infrastructure). If a single
+test suite mixes both goals, split it — or pick the column whose goal dominates.
+
+| Feature | Dev | Test | Staging | Prod |
+|---|---|---|---|---|
+| Lock file | off | off | match prod | on, if multiple processes may share storage |
+| Deletion directory | off | off | **on** | **on** |
+| Truncation directory | off | off | optional | optional |
+| Continuous backup | off | off | **on** | **on** |
+| Full backup | ad-hoc | ad-hoc | scheduled (match prod) | scheduled (e.g. nightly) |
+| Adaptive housekeeping | off | off | match prod | on for write-heavy workloads |
+| Channel count | 1 | 1 | match prod | tuned up-front to CPU/IO |
+| Read-only mode | n/a | optional | for replicas / snapshot inspection | for read replicas / snapshot inspection |
+| JMX monitoring | auth/SSL off | auth/SSL off | **auth and SSL on** | **auth and SSL on** |
+| REST interface | optional | optional | off, or behind same auth as prod | off; if needed, behind auth and network isolation |
+
+**Key rules of thumb:**
+
+- **Staging mirrors prod.** The point of staging is to exercise the production
+  configuration end-to-end. Disabling backups, lock files, or auth in staging
+  defeats the dress rehearsal.
+- **Dev favours convenience.** Quick restarts beat operational fidelity on a
+  developer's machine. The storage is disposable.
+- **Test favours determinism.** Predictable, repeatable behaviour is more
+  valuable in tests than realistic throughput or backup pipelines.
+- **Channel count cannot be changed without migration.** Confirm the prod
+  number on representative staging hardware before you ship.
+- **Unauthenticated JMX is remote code execution.** Enable auth and SSL in any
+  environment reachable beyond a developer laptop.
+
+For per-feature reasoning (why each setting is recommended for each environment,
+what trade-off it represents), see `references/dev-test-staging-prod.md`.
+
 ## Pitfalls & gotchas
 
 1. **`createEmbeddedStorageManager()` returns a started manager.** You don't need to
@@ -377,9 +422,12 @@ shows what it resolved. Easier: log the settings after building.
 **"Can I run multiple managers with different configs?"** → Yes — each manager is
 independent. Different directories, same JVM.
 
-**"What's a sane housekeeping budget for a busy writer?"** → Keep default interval
-`1s`, raise time budget to `50ms`-`100ms` if you see GC falling behind. Enable
-`housekeeping-adaptive` for auto-tuning.
+**"What's a sane housekeeping budget for a busy writer?"** → For write-heavy
+workloads in production, enable `housekeeping-adaptive` — it raises the budget
+automatically when GC falls behind, which is exactly the situation a fixed
+budget can't keep up with. The fixed default (`interval=1s`,
+`time-budget=10ms`) is sufficient for read-heavy or low-write apps. See
+"Best practices" above for the per-environment recommendation.
 
 ## Deeper lookups (on-demand)
 
@@ -390,6 +438,8 @@ independent. Different directories, same JVM.
   description, and the type it configures.
 - `references/channel-count-tuning.md` — deep treatment of when to bump channels and
   how to migrate.
+- `references/dev-test-staging-prod.md` — per-feature reasoning for the
+  best-practices table above, plus the rationale for each environment.
 - `references/examples-expanded.md` — six full config examples across formats.
 - `references/pitfalls-deep-dive.md` — each pitfall above with a minimal reproducer.
 
@@ -401,5 +451,8 @@ independent. Different directories, same JVM.
 - `docs/modules/storage/pages/configuration/housekeeping.adoc`
 - `docs/modules/storage/pages/configuration/readonly.adoc`
 - `docs/modules/storage/pages/configuration/storage-files-and-directories.adoc`
+- `docs/modules/storage/pages/configuration/lock-file.adoc`
 - `docs/modules/storage/pages/configuration/backup/`
+- `docs/modules/storage/pages/configuration/best-practices.adoc` — Dev / Test
+  / Staging / Prod recommendations.
 - `examples/helloworld-ini/`

@@ -39,26 +39,41 @@ changes. **You tell it what changed.** Everything in this skill stems from that 
 
 A single, load-bearing sentence: **"The modified object must be stored."**
 
-- Eclipse Store does not track mutations.
-- `store(x)` persists `x` **plus** any of `x`'s referenced objects that have **not yet
-  been persisted**.
-- It does **not** re-persist objects `x` references that *are* already persisted, even
-  if they changed. (That's "lazy storing", the default.)
+Two rules unpack it:
 
-The implication: if you add an element to a collection, the *collection* has changed.
-Store the collection. If you update a field on an entity, the *entity* has changed.
-Store the entity. If you swap a String on an entity, the *entity* has changed (the
-String is immutable; the entity's reference to it changed). Store the entity.
+1. **The object you pass to `store(...)` is *always* re-written.** This is true for
+   both lazy and eager storers, regardless of whether that object is already
+   registered in storage. The lazy/eager distinction only governs how *referenced
+   child* objects are walked.
+2. **Default lazy storing skips already-registered child references.** If
+   `x.child` is already in the persistent registry, the lazy walk records the
+   reference but does not descend into the child's fields. A field that was
+   mutated in place on an already-known child therefore does **not** persist.
+
+The implication: if you add an element to a collection, the *collection* has changed
+(the explicit argument always re-writes — and the new element, never seen before, is
+written). Store the collection. If you update a field on an existing entity, the
+*entity* has changed; store the entity directly — storing its parent is not enough,
+because the lazy walk skips already-registered children.
+
+For collections specifically this is what makes lazy storing scale: a list of one
+million customers with one new element costs roughly one customer's worth of payload,
+not one million. The list shell is re-written (explicit argument), the new element is
+written (newly encountered), and the existing 999,999 are skipped.
 
 This rule combined with the thread-safety model (see below) is the entirety of
 day-to-day storing.
 
 ### Atomicity & threads
 
-Each `store()` call is an atomic transaction at the disk level — it succeeds fully or
-not at all. But **Eclipse Store does not synchronize the in-memory graph for you**. You
-must mutate and call `store()` under the same lock. Without that, another thread can
-observe a half-mutated graph or the write can race.
+Each `store()` call is atomic for **durability** — it succeeds fully on disk or not
+at all. This is *durability* atomicity, not *isolation* in RAM. Eclipse Store does
+not synchronize the in-memory graph for you; the graph the store traverses is
+unprotected from concurrent mutation.
+
+You must mutate and call `store()` under the same lock. Without that, another thread
+can observe a half-mutated graph or the write can race. See `concurrency-and-locking`
+for the canonical treatment, the strategy ladder, and the GigaMap-specific story.
 
 ## Core API
 
@@ -66,18 +81,28 @@ All methods live on `EmbeddedStorageManager` / `StorageConnection`:
 
 | Method | Stores | Notes |
 |---|---|---|
-| `long store(Object x)` | `x` + lazily referenced new subgraph | **The workhorse.** |
-| `long[] storeAll(Object... xs)` | each `x` + referenced new subgraph | The array itself is not stored. |
-| `long[] storeAll(Iterable<?> xs)` | each element + referenced new subgraph | The iterable itself is not stored. |
-| `long storeRoot()` | the root object | Special case; rarely needed after startup (see note below). |
-| `Storer createStorer()` | programmable | The default lazy storer behind `store()`. |
-| `Storer createLazyStorer()` | explicit lazy | Same as default. |
-| `Storer createEagerStorer()` | everything reachable, even already-persisted | Use for known-dirty subgraphs. |
-| `BatchStorer` | size/time-bounded batched commits | Via `storageManager.batchStorerBuilder()`. **For ingest loops.** |
+| `long store(Object x)` | `x` + lazily referenced new subgraph | **The workhorse.** Convenience method, always lazy, auto-commits. |
+| `long[] storeAll(Object... xs)` | each `x` + referenced new subgraph | The array itself is not stored. Always lazy, auto-commits. |
+| `long[] storeAll(Iterable<?> xs)` | each element + referenced new subgraph | The iterable itself is not stored. Always lazy, auto-commits. |
+| `long storeRoot()` | the root object | Special case; rarely needed after startup (see note below). Always lazy. |
+| `Storer createStorer()` | programmable | The default lazy storer. **Not `AutoCloseable`** — call `.commit()` explicitly; do *not* use try-with-resources. |
+| `Storer createLazyStorer()` | explicit lazy | Same as default. **Not `AutoCloseable`.** |
+| `Storer createEagerStorer()` | everything reachable, even already-persisted | Use for known-dirty subgraphs. **Not `AutoCloseable`.** |
+| `BatchStorer` | size/time-bounded batched commits | Via `storageManager.batchStorerBuilder()`. **For ingest loops.** *Is* `AutoCloseable` (the exception). |
 
 `Storer` contract: `storer.store(x)` enqueues; `storer.commit()` flushes. You can stage
 multiple stores and commit once — this is the Eclipse Store notion of a multi-object
-transaction.
+transaction. **Without `commit()`, the buffered data is discarded — the store had no
+effect on disk.**
+
+**Convenience methods are always lazy.** `store`, `storeAll`, and `storeRoot` on the
+manager internally create a default (lazy) storer and commit it for you. There is no
+flag to make them eager. For eager semantics, create the storer explicitly via
+`createEagerStorer()`.
+
+**`Storer` instances are single-threaded.** Each thread that wants to store
+concurrently must obtain its own `Storer` — they must not be shared across threads.
+See `concurrency-and-locking` for the full thread-safety matrix.
 
 ## Idiomatic patterns
 
@@ -182,8 +207,10 @@ public void renameCustomer(String id, String newEmail) {
 }
 ```
 
-This is non-negotiable in multi-threaded code. Eclipse Store provides a convenience
-`XThreads.executeSynchronized(Runnable)` but a real per-aggregate lock is better.
+This is non-negotiable in multi-threaded code. The lock must span **both** the
+mutation and the `store()` call. See `concurrency-and-locking` for the full strategy
+ladder (`XThreads.executeSynchronized`, `LockedExecutor`, `LockScope`, striped
+helpers, Spring `@Read` / `@Write` / `@Mutex`) and which to pick when.
 
 ## Anti-patterns (do NOT do this)
 
@@ -220,16 +247,26 @@ for (Event e : events) {
 ```java
 // WRONG
 customer.address().setStreet("New Street");
-storage.store(customer);     // persists customer, which already references the same
-                             // Address object — Eclipse Store sees no new reference,
-                             // so the mutated Address is NOT re-persisted.
+storage.store(customer);     // persists customer (the explicit argument is always
+                             // re-written), but the lazy walk hits the already-
+                             // registered Address and stops there — its mutated
+                             // street is NOT re-persisted.
 ```
 
-Default lazy storing skips children already persisted. The Address was modified, so
-*it* needs to be stored.
+The lazy walk applied to `store(customer)`:
 
-**Fix**: `storage.store(customer.address())`. Or set a
-`PersistenceEagerStoringFieldEvaluator` for that field (see Advanced below).
+```
+Customer  <-- explicit argument: ALWAYS re-written
+   |
+Address   <-- child reference, already in registry: STOP
+              (the field mutation is invisible to the walk)
+```
+
+**Fix**: store the modified object directly: `storage.store(customer.address())`.
+Or, for fields where this happens routinely, register a
+`PersistenceEagerStoringFieldEvaluator` for that field so the walk descends through
+it (see Advanced below). Or, for a one-shot bulk write where correctness matters
+more than I/O cost, use an eager storer.
 
 ### Anti-pattern 4 — Storing the array from `storeAll(Object...)`
 
@@ -306,8 +343,16 @@ root reference (see `root-and-object-graph`, Pattern C).
    `PersistenceEagerStoringFieldEvaluator` targeting that specific field.
 7. **BatchStorer build without thresholds.** `IllegalStateException` from `.build()`.
    Set at least `maxSize` or `flushCycle`.
-8. **Forgetting `commit()` on a manual Storer.** Without `commit()`, nothing is
-   written — unlike the manager's `store()` which commits immediately.
+8. **Forgetting `commit()` on a manual `Storer`.** Without `commit()`, the buffered
+   data is discarded — the store had no effect on disk. Convenience methods
+   (`storage.store(...)`) commit for you; explicit storers do not. `Storer` is
+   **not** `AutoCloseable`; do not put it in try-with-resources.
+9. **Convenience methods assumed to be eager.** `store`, `storeAll`, and
+   `storeRoot` on the manager are *always* lazy. There is no flag. If you need
+   eager semantics, call `createEagerStorer().store(x).commit()` explicitly.
+10. **Sharing a `Storer` across threads.** A `Storer` is single-threaded state.
+    Each thread that wants to commit concurrently must obtain its own from
+    the manager. See `concurrency-and-locking` for the matrix.
 
 ## Advanced — custom eager field evaluator
 
@@ -329,12 +374,18 @@ Only fields the evaluator returns `true` for are eager-stored.
 
 - **`root-and-object-graph`** — "store the parent" often means "store a collection on
   the root".
-- **`lazy-loading`** — `Lazy<T>` wraps deferred *loading*, not storing. Storing a
-  `Lazy<T>` stores the reference and the subgraph if loaded-and-dirty.
+- **`lazy-loading`** — `Lazy<T>` wraps deferred *loading*, not storing. Two unrelated
+  concepts that share a name; `lazy-loading` covers when objects are *read* from
+  disk, this skill covers how `store()` *writes* them.
+- **`concurrency-and-locking`** — the lock that brackets mutation + `store()`. The
+  rule that the lock spans both is the conceptual basis for every `store()` call in
+  multi-threaded code. Includes the strategy ladder, the thread-safety matrix
+  (`Storer` is single-threaded), and the GigaMap-specific concurrency rules.
 - **`housekeeping-and-deletion`** — data orphaned by bad stores becomes GC candidates.
 - **`spring-boot`** — Spring's `@Transactional` does **nothing** for Eclipse Store.
-  You still call `store()` yourself. See the `spring-boot` skill for the
-  `@Read`/`@Write`/`@Mutex` AOP that wraps the locking half.
+  You still call `store()` yourself. The Spring AOP layer
+  (`@Read`/`@Write`/`@Mutex`) is the declarative form of the mutate-and-store-under-
+  same-lock rule.
 - **`legacy-type-mapping`** — when you add a field to an entity, storing that entity
   persists the new field; the schema evolution piece covers reading the old binary data.
 
@@ -355,6 +406,16 @@ fact that its parent is already persisted is irrelevant.
 "things" are known up front. It's a single atomic write instead of several. But it is
 *not* a substitute for picking the right object to store — `storeAll` does not help if
 you still pick the wrong granularity.
+
+**"How do I make the whole graph eager?"** → Convenience methods (`store`,
+`storeAll`, `storeRoot`) cannot be made eager — they always use the lazy strategy.
+Create the storer explicitly: `storage.createEagerStorer().store(x).commit()`. There
+is no eager equivalent to `storeAll(...)` on the manager.
+
+**"How do I disambiguate lazy storing from lazy loading?"** → Lazy *storing* (this
+skill) controls how `store()` walks the object graph when writing. Lazy *loading*
+(see `lazy-loading`) defers reading objects from storage into RAM until accessed.
+Two unrelated concepts that share a word.
 
 **"What if `store()` fails?"** → Nothing on disk is committed. On the next
 `.start()`, any partial tail is truncated. Your in-memory graph may still be mutated,

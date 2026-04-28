@@ -66,9 +66,10 @@ No `npm install` step — the generator is zero-dependency Node.js ESM.
 |-------|--------|
 | `getting-started` | `EmbeddedStorage.start`, `EmbeddedStorageFoundation`, lifecycle, shutdown |
 | `root-and-object-graph` | default root, custom root, `storeRoot`, graph design |
-| `storing-data` | `store()`, `storeAll()`, eager storing, `BatchStorer`, the "store the parent" rule |
+| `storing-data` | `store()`, `storeAll()`, lazy vs eager storing, `BatchStorer`, the "store the parent" rule |
 | `lazy-loading` | `Lazy<T>`, `Reference<T>`, deferred subgraph loading |
-| `configuration` | programmatic / INI / XML config, channel count, backup directory |
+| `concurrency-and-locking` | thread safety, mutate + `store()` under same lock, `LockedExecutor` / `LockScope` / striped, Spring `@Read`/`@Write`/`@Mutex`, GigaMap concurrency |
+| `configuration` | programmatic / INI / XML config, channel count, backup directory, Dev / Test / Staging / Prod best practices |
 | `housekeeping-and-deletion` | GC, file compaction, cache eviction, deletes via ref removal |
 | `legacy-type-mapping` | schema evolution — renamed / removed / retyped fields and classes |
 | `custom-type-handlers` | `CustomBinaryHandler`, registering handlers on the foundation |

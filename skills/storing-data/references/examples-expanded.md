@@ -253,3 +253,72 @@ tx.write(() -> {
 
 Both the mutation and the store are guaranteed to happen under the same write lock,
 with no reader seeing an intermediate state.
+
+## Example 6 — Lazy walk vs eager walk, visualised
+
+The same scenario stored with a lazy storer and an eager storer side by side.
+The graph: `root.customers()` is the explicit argument; Customer A and her
+address are already registered (have `objectId`); Customer B was just added
+in memory and has no `objectId` yet.
+
+```
+                       root.customers()  <-- explicit arg to store(...)
+                              |
+                  +-----------+-----------+
+                  |                       |
+              Customer A              Customer B
+            (in registry,             (NEW — not in
+             objectId=42)              registry)
+                  |                       |
+              Address                 Address
+            (in registry)              (NEW)
+```
+
+Storing it three different ways:
+
+```java
+// Lazy (the default — convenience methods always behave this way)
+storage.store(root.customers());
+
+// Lazy (explicit — same as above)
+Storer lazy = storage.createLazyStorer();
+lazy.store(root.customers());
+lazy.commit();
+
+// Eager (must be explicit — there is no eager convenience method)
+Storer eager = storage.createEagerStorer();
+eager.store(root.customers());
+eager.commit();
+```
+
+What gets written:
+
+```
+  Lazy walk:
+    root.customers()       ALWAYS written (explicit argument)
+      \-> Customer A        STOP — already in registry
+      \-> Customer B        write B
+            \-> Address(B)  write Address(B)
+
+    Bytes written: collection shell + Customer B + Address(B).
+
+
+  Eager walk:
+    root.customers()       ALWAYS written (explicit argument)
+      \-> Customer A        re-write A (already in registry, eager descends)
+            \-> Address(A)  re-write Address(A)
+      \-> Customer B        write B (new)
+            \-> Address(B)  write Address(B)
+
+    Bytes written: every reachable object.
+```
+
+The same is true if you mutate `Customer A.address().setStreet(...)` in place
+before storing: the lazy walk does *not* persist the change (Address A is
+skipped), the eager walk does (Address A is re-written as a side effect of
+the full traversal).
+
+This is why **the explicit argument is always re-written** is the rule that
+matters: it tells you when storing the parent is enough (when the parent
+itself or its newly-added children carry the change) and when it isn't (when
+an already-registered child's *fields* changed in place).

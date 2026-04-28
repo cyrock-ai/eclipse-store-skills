@@ -1,5 +1,12 @@
 # AOP aspects — `@Read`, `@Write`, `@Mutex`
 
+The AOP layer is the declarative form of the rule "mutate + `store()` under
+the same lock" from the canonical concurrency treatment. See
+`concurrency-and-locking` for the conceptual basis (why the rule exists, what
+breaks without it, how it fits into the wider strategy ladder of
+`XThreads.executeSynchronized` / `LockedExecutor` / `LockScope` / striped
+helpers). This page is the Spring-specific reference.
+
 ## What the starter provides
 
 `LockAspect` in
