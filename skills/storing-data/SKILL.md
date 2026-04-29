@@ -1,13 +1,27 @@
 ---
 name: storing-data
 description: >
-  Guide Claude on persisting object graphs with Eclipse Store — the "modified object must
-  be stored" rule, the difference between lazy and eager storing, how `store()` /
-  `storeAll()` / `storeRoot()` differ, when to use a `BatchStorer`, and how to keep
-  mutation and `store()` atomic under application locks. Use this skill when the user
-  asks to "store data", "persist changes", "store all", "storeRoot", "why isn't my change
-  saved", "BatchStorer", "createStorer", "eager storer", "lazy storer", "bulk insert",
-  "store a list", "transaction", "commit", "hidden field not stored", or is confused
+  Guide Claude on persisting object graphs with Eclipse Store — the "modified
+  object must be stored" rule, the difference between lazy and eager storing,
+  how `store()` / `storeAll()` / `storeRoot()` differ, when to use a
+  `BatchStorer`, and how to keep mutation and `store()` atomic under application
+  locks.
+
+  **Apply this skill whenever a service / repository / facade / controller
+  method that mutates persistent state is being designed, reviewed, or
+  extended** — not only when a missing `store()` already caused a "change
+  isn't on disk" bug. Eclipse Store has no dirty tracking, so every mutating
+  method is implicitly responsible for an explicit `store(...)` call (and a
+  lock around it — see `concurrency-and-locking`). Deciding *what* to pass to
+  `store()` is also a design decision: shallow vs. deep walk, eager vs. lazy
+  storer, single call vs. `BatchStorer`. If you are sketching any code path
+  that writes to the persistent graph, load this skill before deciding the
+  shape of that method.
+
+  Also use this skill when the user asks to "store data", "persist changes",
+  "store all", "storeRoot", "why isn't my change saved", "BatchStorer",
+  "createStorer", "eager storer", "lazy storer", "bulk insert", "store a
+  list", "transaction", "commit", "hidden field not stored", or is confused
   about why a mutation didn't persist after `store()`.
 version: 0.1.0
 ---
@@ -19,6 +33,25 @@ have "dirty tracking", and it does not crawl the graph after every mutation look
 changes. **You tell it what changed.** Everything in this skill stems from that one fact.
 
 ## When to use this skill
+
+**Design-time triggers (apply proactively, even without explicit `store()` keywords):**
+
+- User is **designing or extending a service / repository / facade /
+  controller method** that mutates persistent state. Every such method is
+  implicitly a critical section that must end in `store(...)`; deciding
+  *what* to pass to `store(...)` (the mutated leaf? a parent collection? the
+  whole subtree via an eager storer?) shapes the method's contract.
+- User is **designing a bulk import / migration / seeding routine** — the
+  choice between many small `store(...)` calls, a single `BatchStorer`, or an
+  eager storer is decided here, before the loop is written.
+- User is **adding a new persistent field** that mutates after the entity is
+  first stored — confirm whether the parent's existing `store(...)` site
+  walks deeply enough, or whether a new `store(...)` call is needed.
+- Code review surfaces a graph mutation, a collection `add`/`remove`, or a
+  field assignment on a persisted object — verify the matching `store(...)`
+  call exists and reaches the mutated object.
+
+**Reactive triggers:**
 
 - User is about to call `store()`, `storeAll()`, `storeRoot()`, or `createStorer()`.
 - User reports "I mutated X and called `store()`, but the change isn't on disk".

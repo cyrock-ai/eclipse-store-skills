@@ -2,12 +2,24 @@
 name: root-and-object-graph
 description: >
   Guide Claude on designing and using the root instance of an Eclipse Store database —
-  the single entry point for the entire persisted object graph. This skill should be used
-  when the user asks to "set the root", "use a custom root", "design a root class",
-  "use defaultRoot vs customRoot", "register constants", "load the root", "storeRoot",
-  "entry point to the graph", "what goes in the root", or needs help deciding whether to
-  use a bare object, a collection, or a dedicated root class, and how to structure the
-  top of the object graph for maintainability and performance.
+  the single entry point for the entire persisted object graph.
+
+  **Apply this skill whenever the persistent object graph is being designed,
+  reviewed, or extended** — root class shape, what lives directly on the root,
+  splits between sub-aggregates, registration of constants, decisions about
+  collections vs. custom container classes. The root decision *is* the
+  model-design decision in Eclipse Store: there are no tables, no
+  entity-per-class concept — the structure of the root is the structure of the
+  database. If you are sketching entities, aggregate roots, or any persistent
+  container that will be reachable from `start(root, ...)`, load this skill
+  before proposing a structure.
+
+  Also use this skill when the user asks to "set the root", "use a custom root",
+  "design a root class", "use defaultRoot vs customRoot", "register constants",
+  "load the root", "storeRoot", "entry point to the graph", "what goes in the
+  root", or needs help deciding whether to use a bare object, a collection, or
+  a dedicated root class, and how to structure the top of the object graph for
+  maintainability and performance.
 version: 0.1.0
 ---
 
@@ -19,7 +31,20 @@ is easy; design it poorly and you'll fight the library on every store and load.
 
 ## When to use this skill
 
-Use this skill when the user:
+**Design-time triggers (apply proactively, even without explicit "root" keywords):**
+
+- User is designing or reviewing the **persistent object model** — entities,
+  aggregates, the top-level containers that will sit under the root. The root
+  shape is the model shape; the two cannot be designed separately.
+- User is adding a **new top-level concept** (a new entity type, a new
+  registry, a new sub-aggregate) and asking where it should hang off the root.
+- User is **refactoring** an existing root that has grown into a god object,
+  or splitting one container into several.
+- User is designing a class that will hold collections of persistent entities
+  — choice between a plain field, a `Map`/`List`, a custom container, or a
+  `GigaMap` is decided here.
+
+**Reactive triggers:**
 
 - Is about to write the class they'll pass to `EmbeddedStorage.start(root, …)`.
 - Asks what should be stored "at the top" of the graph.

@@ -3,15 +3,29 @@ name: gigamap
 description: >
   Guide Claude on using GigaMap — Eclipse Store's indexed, lazily-loaded,
   query-capable collection for very large datasets (millions to billions of
-  entities). This skill should be used when the user asks to "use GigaMap",
-  "index entities", "bitmap index", "unique index", "identity index", "run a
-  query", "GigaQuery", "gigaMap.query", "sub-query", "Lucene full-text search",
-  "vector similarity search", "jvector", "spatial index", "geo query",
-  "near(lat, lon)", "withinBox", "SpatialIndexer", "Vectorizer",
-  "VectorIndexConfiguration", "DocumentPopulator", "LuceneContext",
-  "IndexerString", "IndexerLocalDate", "BinaryIndexerUUID", "ByteIndexer",
-  "IndexerMultiValue", "update a GigaMap entity", "gigaMap.store",
-  "billions of rows", or asks why `storageManager.store(gigaMap)` is unsafe.
+  entities).
+
+  **Apply this skill whenever a new entity collection is being designed, or an
+  existing `List` / `Map` / `Set` of persisted entities is being scaled or
+  reviewed for query needs.** Choosing between a plain collection, a `Lazy`
+  collection, and a `GigaMap` is a **model-design decision**, not a tuning
+  knob: promoting `List<X>` → `GigaMap<X>` later involves a data migration and
+  a refactor of every reader/query. If the user is sketching an aggregate that
+  holds entities that may grow into the 100K+ range, or that will need any of
+  indexed lookup / filtering / spatial / full-text / vector search, evaluate
+  GigaMap *now*. Also load this skill whenever the user mentions queries,
+  search, or filtering against persisted entities — even before any size
+  threshold is hit.
+
+  Also use this skill when the user asks to "use GigaMap", "index entities",
+  "bitmap index", "unique index", "identity index", "run a query", "GigaQuery",
+  "gigaMap.query", "sub-query", "Lucene full-text search", "vector similarity
+  search", "jvector", "spatial index", "geo query", "near(lat, lon)",
+  "withinBox", "SpatialIndexer", "Vectorizer", "VectorIndexConfiguration",
+  "DocumentPopulator", "LuceneContext", "IndexerString", "IndexerLocalDate",
+  "BinaryIndexerUUID", "ByteIndexer", "IndexerMultiValue", "update a GigaMap
+  entity", "gigaMap.store", "billions of rows", or asks why
+  `storageManager.store(gigaMap)` is unsafe.
 version: 0.1.0
 ---
 
@@ -29,6 +43,23 @@ that supports:
 - Built-in integration with Eclipse Store persistence.
 
 ## When to use this skill
+
+**Design-time triggers (apply proactively, before "billions of rows" is the question):**
+
+- User is **designing a new entity collection** (e.g. `Order`, `Event`,
+  `Document`, `Sensor`, `Customer`) that will accumulate over time. Even if
+  the current size is small, plan for promotion to `GigaMap` if growth is
+  plausible — the choice of container shape is hard to change later.
+- User is **adding a new entity type** that will need lookups by anything
+  other than identity — by date range, by foreign key, by string field, by
+  geographic position, by similarity. Each of those points to an indexer
+  configuration that should be sketched at design time.
+- User is **scaling up** an existing aggregate from in-memory `List`/`Map` to
+  something query-capable.
+- User is **designing query / search / filter capabilities** in the service
+  layer — GigaMap's index types determine which queries are cheap.
+
+**Reactive triggers:**
 
 - User has or expects > 100,000 entities and wants indexed access.
 - User asks for queries, search, filtering.

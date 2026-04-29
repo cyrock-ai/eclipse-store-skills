@@ -25,6 +25,10 @@ fundamentals (root, `store()`, lazy loading, housekeeping) are identical.
 ## When to use this skill
 
 - User is building a Spring Boot 3 app that persists with Eclipse Store.
+- User is **designing or wiring a `@Service` / `@Repository` / `@Component`
+  bean that touches persistent state** — `@Read` / `@Write` / `@Mutex`
+  placement is part of the bean's contract and is decided here, not bolted
+  on after a concurrency bug.
 - User asks about `org.eclipse.store.*` properties.
 - User wants to inject an `EmbeddedStorageManager`.
 - User is confused about `@Transactional` vs. `store()` (Spring's transactions

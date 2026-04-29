@@ -6,13 +6,26 @@ description: >
   (`EmbeddedStorageManager`, channels, `Storer`, `GigaMap`, `Lazy<T>`, JCache,
   `Serializer`), and which strategy to use (`XThreads.executeSynchronized`,
   `ReentrantReadWriteLock`, `LockedExecutor`, `LockScope`, `StripeLockedExecutor`,
-  `StripeLockScope`, Spring `@Read` / `@Write` / `@Mutex`). Use this skill when
-  the user asks to "handle concurrent access", "make this thread-safe",
-  "synchronize storing", "lock around store()", "ConcurrentModificationException
-  during serialize", "share a Storer across threads", "what's thread-safe in
-  Eclipse Store", "GigaMap concurrency", "gigaMap.store vs storageManager.store",
-  "iterators leaking read locks", "stress-test concurrent writes", or asks why a
-  multi-threaded app is producing inconsistent state on disk.
+  `StripeLockScope`, Spring `@Read` / `@Write` / `@Mutex`).
+
+  **Apply this skill whenever an Eclipse Store object model, root aggregate, or
+  service / repository / facade layer is being designed, reviewed, or extended**
+  — not only when the user explicitly mentions "lock" or "synchronized". In
+  Eclipse Store the application owns thread-safety because the library is not
+  in the read/write path, so locking decisions are part of the data model and
+  service-layer design itself: where the locks live, which methods are read vs.
+  write, where `store()` is called, whether to use `LockScope` /
+  `StripeLockedExecutor` / Spring `@Read`/`@Write`/`@Mutex`. If you are sketching
+  entities, root containers, repositories, or any API that mutates persistent
+  state, load this skill before proposing a structure.
+
+  Also use this skill when the user asks to "handle concurrent access", "make
+  this thread-safe", "synchronize storing", "lock around store()",
+  "ConcurrentModificationException during serialize", "share a Storer across
+  threads", "what's thread-safe in Eclipse Store", "GigaMap concurrency",
+  "gigaMap.store vs storageManager.store", "iterators leaking read locks",
+  "stress-test concurrent writes", or asks why a multi-threaded app is
+  producing inconsistent state on disk.
 version: 0.1.0
 ---
 
@@ -28,6 +41,27 @@ This skill is the canonical treatment of that responsibility: the single rule, t
 thread-safety matrix, the strategies, the GigaMap-specific story, and the pitfalls.
 
 ## When to use this skill
+
+**Design-time triggers (apply proactively, even without explicit concurrency keywords):**
+
+- User is designing or reviewing the **object model / root aggregate** that
+  Eclipse Store will persist — locking decisions shape which fields belong on
+  which aggregate, whether collections are mutable in place, and where natural
+  lock boundaries fall.
+- User is designing or extending a **service, repository, facade, or
+  controller layer** that reads from or mutates the object graph. Every such
+  method is implicitly a critical section under the "mutate + store under the
+  same lock" rule, so the locking strategy must be chosen alongside the API,
+  not bolted on later.
+- User is introducing a new **entity, sub-aggregate, or `GigaMap`** under the
+  root, or splitting an existing one.
+- User is wiring Spring beans that touch persistent state (`@Service`,
+  `@Repository`, `@Component`) — `@Read` / `@Write` / `@Mutex` placement is
+  part of the bean's contract.
+- Code review surfaces a `store(...)` call, a graph mutation, or an iterator
+  over persistent state — verify it sits inside the right lock scope.
+
+**Reactive triggers (user is already aware of a concurrency concern):**
 
 - User has a multi-threaded app (web request handlers, scheduled jobs, background
   workers) hitting the same `EmbeddedStorageManager`.

@@ -3,11 +3,24 @@ name: lazy-loading
 description: >
   Guide Claude on deferred (lazy) loading of object graphs in Eclipse Store using
   `Lazy<T>` references and lazy collections (`LazyArrayList`, `LazyHashMap`,
-  `LazyHashSet`). This skill should be used when the user asks to "use Lazy<T>",
-  "lazy load a list", "defer loading", "on-demand load", "memory efficient graph",
-  "clear a Lazy reference", "LazyReferenceManager", "unload data from memory",
-  "Lazy.Reference", "LazyArrayList", "LazyHashMap", "lazy collections", or needs help
-  deciding which subgraphs to wrap in `Lazy<>` to speed up startup and cap RAM usage.
+  `LazyHashSet`).
+
+  **Apply this skill whenever a new field, collection, or sub-aggregate is
+  added to the persistent model**, or whenever an existing aggregate is being
+  reviewed for memory/startup behavior. `Lazy<T>` placement is a field-level
+  model decision: deciding *not* to wrap a field is itself a decision (the
+  whole subgraph loads at startup), and retrofitting `Lazy<>` later requires
+  touching every reader of that field. Audit logs, history, attachments,
+  blobs, "all events", "all orders ever", time-series data — these are
+  textbook lazy candidates that should be marked at design time, not
+  retrofitted when startup goes slow. Load this skill when sketching entities
+  with potentially large sub-graphs.
+
+  Also use this skill when the user asks to "use Lazy<T>", "lazy load a list",
+  "defer loading", "on-demand load", "memory efficient graph", "clear a Lazy
+  reference", "LazyReferenceManager", "unload data from memory", "Lazy.Reference",
+  "LazyArrayList", "LazyHashMap", "lazy collections", or needs help deciding
+  which subgraphs to wrap in `Lazy<>` to speed up startup and cap RAM usage.
 version: 0.1.0
 ---
 
@@ -19,6 +32,23 @@ collections are how you defer loads until needed — and how you let the JVM GC 
 loaded subgraphs when memory is tight.
 
 ## When to use this skill
+
+**Design-time triggers (apply proactively, before any memory issue is observed):**
+
+- User is **adding a field** to the persistent object model whose value could
+  grow unbounded or rarely needs to be in memory — audit logs, change history,
+  attachments, big blobs, "all events", "all customers ever", time-series data.
+  The default of *not* wrapping in `Lazy<>` means the whole subgraph loads at
+  startup; that decision should be deliberate.
+- User is **designing the root** or a top-level aggregate and listing its
+  child containers — flag which ones should hang off `Lazy<>` rather than
+  direct references.
+- User is **adding a new entity type** with a back-reference to a large parent
+  collection, or a per-entity sub-collection (e.g. `Customer.orders`).
+- User is **reviewing** an existing aggregate for memory / startup behavior
+  ahead of a scale-up.
+
+**Reactive triggers:**
 
 - User's `.start()` is slow and they have a big graph.
 - User's heap fills up with objects they rarely access (audit logs, historical data,
