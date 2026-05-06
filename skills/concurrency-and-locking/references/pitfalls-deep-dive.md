@@ -190,7 +190,7 @@ materialise (`.toList()`) before returning or document the contract loudly.
 **Reproducer.**
 
 ```java
-GigaQuery<Order> q = orders.query().is(Order.status, "OPEN");
+GigaQuery<Order> q = orders.query(statusIndex.is("OPEN"));
 Iterator<Order> it = q.iterator();          // acquires read lock
 // ...some work, then the method returns without closing
 ```
