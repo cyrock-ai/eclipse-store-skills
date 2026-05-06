@@ -199,29 +199,165 @@ Query syntax is standard Lucene: `field:term`, `AND`/`OR`/`NOT`,
 
 ## Vector index (jvector)
 
-Artifact: `org.eclipse.store:gigamap-jvector`.
+Artifact: `org.eclipse.store:gigamap-jvector`. Package
+`org.eclipse.store.gigamap.jvector`.
 
-Relevant types (in `org.eclipse.store.gigamap.jvector`):
+Required JVM flag for SIMD acceleration:
 
-| Type | Purpose |
-|---|---|
-| `Vectorizer<E>` | Abstract — override `vectorize(E)` returning `float[]`, and `isEmbedded()` returning `boolean`. |
-| `VectorIndexConfiguration` | Immutable config. Build via `VectorIndexConfiguration.builder().dimension(int).similarityFunction(VectorSimilarityFunction).build()`. |
-| `VectorSimilarityFunction` | Enum: `COSINE`, `DOT_PRODUCT`, `EUCLIDEAN`. |
-| `VectorIndices<E>` | Category registered on the map; holds named `VectorIndex<E>` instances. |
-| `VectorIndex<E>` | Handle for queries. |
-| `VectorSearchResult<E>` | Scored, `SubQuery`-compatible iterable. |
-
-Registration and search:
-
-```java
-VectorIndices<Doc> vi = map.index().register(VectorIndices.Category());
-VectorIndex<Doc>   idx = vi.add("embeddings", cfg, new DocVectorizer());
-VectorSearchResult<Doc> top = idx.search(queryVec, 10);
+```
+--add-modules jdk.incubator.vector
 ```
 
-`VectorIndices.add(name, cfg, vectorizer)` allows multiple named vector
-indexes per map.
+Without it the index works, but distance kernels run scalar — measurably
+slower for both build and search on Java 20+. Set in Surefire/Failsafe
+`<argLine>` or your launcher script.
+
+### `Vectorizer<E>`
+
+File: `gigamap-jvector/src/main/java/org/eclipse/store/gigamap/jvector/Vectorizer.java`.
+
+Abstract class. Subclasses extract a `float[]` from an entity.
+
+| Method | Notes |
+|---|---|
+| `abstract float[] vectorize(E entity)` | **Must be thread-safe.** Must not return `null` for a present entity (throws `IllegalStateException` at insert). |
+| `List<float[]> vectorizeAll(List<? extends E>)` | Default loops `vectorize(...)`. Override for batch APIs. |
+| `boolean isEmbedded()` | `true` = vector lives on the entity (no separate storage). `false` (default) = stored in an internal `GigaMap<VectorEntry>`. Stable for the lifetime of the index. |
+
+### `VectorSimilarityFunction`
+
+Enum.
+
+| Value | Use |
+|---|---|
+| `COSINE` | Default. Direction-only. Text/semantic embeddings (OpenAI, Cohere, BERT, sentence-transformers). |
+| `DOT_PRODUCT` | Pre-normalized vectors; MIPS / recommendation. Cheaper than `COSINE` (no normalization) and gives identical ranking once vectors are unit-length. |
+| `EUCLIDEAN` | Magnitude matters: spatial, image pixels, FaceNet, time-series, k-means clustering. |
+
+### `VectorIndexConfiguration`
+
+Immutable. Build via `VectorIndexConfiguration.builder()...build()` or via a
+factory preset.
+
+#### HNSW parameters
+
+| Method | Default | Notes |
+|---|---|---|
+| `dimension(int)` | (required) | Length of every `float[]`. Mismatch throws on `add`. |
+| `similarityFunction(VectorSimilarityFunction)` | `COSINE` | See enum table above. |
+| `maxDegree(int)` | 16 | "M" — neighbours per node. Higher → better recall, more memory. PQ silently overrides to 32. |
+| `beamWidth(int)` | 100 | "efConstruction" — build-time fan-out. Use ≥ `2 * maxDegree`. |
+| `minSearchBeamWidth(int)` | — | Floor for search-time beam width. |
+| `neighborOverflow(float)` | 1.2 | Construction overflow factor. |
+| `alpha(float)` | 1.2 | Pruning parameter. |
+
+#### On-disk + compression
+
+| Method | Default | Notes |
+|---|---|---|
+| `onDisk(boolean)` | `false` | Memory-map the graph from disk. Required for datasets > RAM. |
+| `indexDirectory(Path)` | `null` | Mandatory if `onDisk=true`. Files: `{name}.graph` + `{name}.meta`. |
+| `enablePqCompression(boolean)` | `false` | Product Quantization. **Forces `maxDegree=32`** (FusedPQ). |
+| `pqSubspaces(int)` | `0` (auto: `dimension/4`) | Must divide `dimension` evenly. |
+| `parallelOnDiskWrite(boolean)` | `false` | Multi-threaded persist. Faster for large indices, more resources. |
+
+#### Background tasks
+
+| Method | Default | Notes |
+|---|---|---|
+| `eventualIndexing(boolean)` | `false` | Defer graph mutations to a background thread. Vector store updated synchronously. |
+| `persistenceIntervalMs(long)` | `0` (off) | Background persist check every N ms. `> 0` enables it. |
+| `minChangesBetweenPersists(int)` | 100 | Persist threshold. |
+| `persistOnShutdown(boolean)` | `true` | Flush pending changes on `close()` when `onDisk=true`. |
+| `optimizationIntervalMs(long)` | `0` (off) | Background `cleanup()` check every N ms. |
+| `minChangesBetweenOptimizations(int)` | 1000 | Optimize threshold. |
+| `optimizeOnShutdown(boolean)` | `false` | Run cleanup on `close()`. |
+
+#### Factory presets
+
+Static methods on `VectorIndexConfiguration`:
+
+| Preset | Sizing | Notes |
+|---|---|---|
+| `forSmallDataset(int dim)` | < 10K | In-memory, `maxDegree=16`, `beamWidth=100`. |
+| `forSmallDataset(int dim, VectorSimilarityFunction)` | < 10K | Pick a non-COSINE similarity. |
+| `forMediumDataset(int dim)` | 10K – 1M | In-memory. |
+| `forMediumDataset(int dim, Path indexDirectory)` | 10K – 1M | On-disk variant. |
+| `forLargeDataset(int dim, Path indexDirectory)` | > 1M | On-disk. |
+| `forLargeDataset(int dim, Path indexDirectory, boolean enableCompression)` | > 1M | On-disk + optional PQ. |
+| `forHighPrecision(int dim)` | Maximum recall | In-memory; `maxDegree` 48-64, `beamWidth` 400-500. |
+| `forHighPrecision(int dim, Path indexDirectory)` | Maximum recall | On-disk variant. |
+
+Each has a `builderFor*(...)` counterpart that returns a `Builder` so you can
+override one or two parameters and `.build()` from there.
+
+### `VectorIndices<E>`
+
+Index group. Registered on the map post-build.
+
+```java
+VectorIndices<E> vi = map.index().register(VectorIndices.Category());
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `add(String name, VectorIndexConfiguration cfg, Vectorizer<? super E>)` | `VectorIndex<E>` | Throws if `name` already registered. Index existing entities synchronously. |
+| `ensure(String name, VectorIndexConfiguration cfg, Vectorizer<? super E>)` | `VectorIndex<E>` | Idempotent — returns existing if present. Use on restart paths. |
+| `get(String name)` | `VectorIndex<E>` | Or `null`. |
+| `accessIndices(Consumer<XGettingTable<String, ? extends VectorIndex<E>>>)` | `void` | Lock-protected access to the table. |
+| `iterate(Consumer<? super VectorIndex<E>>)` | `void` | Lock-protected iteration. |
+
+Index name is used as the on-disk file prefix (`{name}.graph`, `{name}.meta`),
+so it must be a valid filename: non-empty, ≤ 200 chars, no `/` or `\`. Names
+are validated at `add`/`ensure` time.
+
+### `VectorIndex<E>`
+
+Handle for one named vector index.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `name()` | `String` | The index name. |
+| `parent()` | `VectorIndices<E>` | Back-reference. |
+| `configuration()` | `VectorIndexConfiguration` | Immutable. |
+| `vectorizer()` | `Vectorizer<? super E>` | The user's vectorizer. |
+| `search(float[] query, int k)` | `VectorSearchResult<E>` | Top-k. |
+| `search(float[] query, int k, int searchBeamWidth)` | `VectorSearchResult<E>` | Per-query beam-width override. |
+| `search(E queryEntity, int k)` | `VectorSearchResult<E>` | "More like this" — vectorizes `queryEntity` and searches. |
+| `search(E queryEntity, int k, int searchBeamWidth)` | `VectorSearchResult<E>` | Same with beam-width override. |
+| `getVector(long entityId)` | `float[]` | Stored vector for an entity. |
+| `optimize()` | `void` | `cleanup()` the graph. Drains the indexing queue first if `eventualIndexing`. |
+| `persistToDisk()` | `void` | No-op for in-memory indices. Drains queue, flushes graph + meta to disk. |
+| `isOnDisk()` | `boolean` | |
+| `isPqCompressionEnabled()` | `boolean` | |
+| `close()` | `void` | Flushes per `persistOnShutdown` / `optimizeOnShutdown`, releases resources. Called automatically when the parent storage closes. |
+
+### `VectorSearchResult<E>`
+
+Extends `ScoredSearchResult<E>` (from the parent gigamap module). Iterable
+of `Entry<E>` ordered by descending similarity.
+
+| Method on `Entry<E>` | Returns | Notes |
+|---|---|---|
+| `entity()` | `E` | Lazy — calls `parentMap.get(entityId)` on first access. |
+| `score()` | `float` | Similarity score (interpretation depends on `VectorSimilarityFunction`). |
+| `entityId()` | `long` | The GigaMap entity id (== HNSW ordinal). |
+
+`VectorSearchResult` is also a `GigaMap.SubQuery`, so it composes with bitmap
+and Lucene via `gigaMap.query(...).and(vectorSearchResult)` (intersection by
+id set, scores dropped). Inverting the chain — `vectorSearchResult.and(gigaQuery)`
+— returns a `ScoredSearchResult` that preserves scores.
+
+### Files on disk (per index)
+
+| File | Contents |
+|---|---|
+| `{name}.graph` | JVector `OnDiskGraphIndex` payload. May embed `InlineVectors` and `FusedPQ` features. |
+| `{name}.meta` | 24-byte sidecar: format version (currently 2), dimension, expected vector count, highest entity id. |
+
+Any mismatch on load triggers a silent rebuild from the source (`vectorStore`
+in computed mode, or by iterating `parentMap` in embedded mode). One-time
+cold-start cost; no data loss.
 
 ## Sub-queries
 
@@ -230,9 +366,15 @@ indexes per map.
 | `GigaQuery<E>` | `gigaMap.query(...)` |
 | `LuceneSearchResult<E>` | `luceneIndex.search("...", n)` |
 | `VectorSearchResult<E>` | `vectorIndex.search(vec, n)` |
+| `ScoredSearchResult<E>` | `luceneSearchResult.and(gigaQuery)` / `vectorSearchResult.and(gigaQuery)` |
 | `EntityIdMatcher.Ascending(long... sortedIds)` | Ad-hoc fixed set |
 
 All combine via `.and(SubQuery)` (logical AND).
+
+**Score handling.** Calling `gigaQuery.and(scoredSubQuery)` drops scores —
+only the matching id set is intersected. To keep scores, invert the chain:
+`scoredSubQuery.and(gigaQuery)` returns a `ScoredSearchResult` whose order
+preserves the original ranking.
 
 ## Equality
 

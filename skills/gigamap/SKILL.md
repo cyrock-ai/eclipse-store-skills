@@ -19,14 +19,31 @@ description: >
 
   Also use this skill when the user asks to "use GigaMap", "index entities",
   "bitmap index", "unique index", "identity index", "run a query", "GigaQuery",
-  "gigaMap.query", "sub-query", "Lucene full-text search", "vector similarity
-  search", "jvector", "spatial index", "geo query", "near(lat, lon)",
-  "withinBox", "SpatialIndexer", "Vectorizer", "VectorIndexConfiguration",
+  "gigaMap.query", "sub-query", "Lucene full-text search", "spatial index",
+  "geo query", "near(lat, lon)", "withinBox", "SpatialIndexer",
   "DocumentPopulator", "LuceneContext", "IndexerString", "IndexerLocalDate",
   "BinaryIndexerUUID", "ByteIndexer", "IndexerMultiValue", "update a GigaMap
   entity", "gigaMap.store", "billions of rows", or asks why
   `storageManager.store(gigaMap)` is unsafe.
-version: 0.1.0
+  
+  **Vector / embedding triggers (apply at design time too).** Apply this skill
+  whenever the user is designing or building anything that involves embeddings
+  or similarity. That includes: "vector similarity search", "vector search",
+  "kNN" / "k-nearest-neighbours" / "ANN" / "approximate nearest neighbour",
+  "HNSW", "embeddings", "store embeddings", "store vectors", "vector index",
+  "vector database", "vector store", "semantic search", "RAG", "retrieval
+  augmented generation", "recommendation engine", "find similar X", "OpenAI
+  embeddings", "sentence-transformers", "text-embedding-ada", "image
+  embeddings", "face recognition embeddings", "jvector", "VectorIndex",
+  "VectorIndices", "VectorIndexConfiguration", "Vectorizer", "VectorSearchResult",
+  "COSINE / DOT_PRODUCT / EUCLIDEAN similarity", "PQ compression" /
+  "Product Quantization", "on-disk vector index", "eventual indexing",
+  "background persistence", "background optimization", "embedded vs computed
+  vectors", "vectorize entities". Eclipse Store ships an HNSW vector index
+  via the `gigamap-jvector` artifact and it integrates with bitmap / Lucene
+  via sub-queries — so when a user is choosing a vector store or layering
+  similarity over an existing entity model, this is the right design lens.
+version: 0.2.0
 ---
 
 # Eclipse Store — GigaMap (Indexed, Queryable, Lazy Large Collections)
@@ -294,10 +311,13 @@ need those, keep a full geometry object on the entity and post-filter the
 same way you'd chain `withinRadius`. Lat/lon getters return `Double`
 (nullable).
 
-### Vector — approximate nearest neighbour via jvector
+### Vector — HNSW similarity search via jvector
 
-Separate artifact. Use for embeddings (text, image, audio) where you want
-k-nearest-neighbour similarity search.
+Separate artifact. Eclipse Store wraps [JVector](https://github.com/datastax/jvector)
+(an HNSW kNN library) so a `GigaMap<E>` becomes a vector-searchable map: each
+entity gets one or more named vector indices, mutations broadcast automatically,
+and search returns lazily-resolved entities. Sub-queryable with bitmap and
+Lucene (Pattern J).
 
 ```xml
 <dependency>
@@ -307,48 +327,161 @@ k-nearest-neighbour similarity search.
 </dependency>
 ```
 
-Declare a `Vectorizer<E>`, configure dimension and similarity function,
-register via `map.index().register(...)`:
+> **JVM flag.** Add `--add-modules jdk.incubator.vector` to enable the Panama
+> Vector API. Without it, JVector falls back to scalar code — functional but
+> noticeably slower on indexing and search. Java 20+ recommended; Java 21 LTS
+> is the sweet spot.
+
+#### Vectorizer: embedded vs computed mode
+
+`Vectorizer<E>` has one decision: `isEmbedded()`. It controls **where the
+vectors live**, and is one of the highest-leverage design choices in the
+whole skill — switching modes later means rebuilding the index from scratch.
+
+| Mode | When `vectorize()` runs | Vector storage | Pick when |
+|---|---|---|---|
+| **Embedded** (`isEmbedded() == true`) | On every graph build/search hit (cached per-search) | None — vector is read from the entity field | The entity already carries its `float[]` embedding (e.g. `record Doc(String text, float[] embedding)`). No duplicate storage. |
+| **Computed** (default, `isEmbedded() == false`) | Once at `gigaMap.add(entity)` | Separate internal `GigaMap<VectorEntry>` | Vectors come from an external/expensive source (OpenAI, sentence-transformers, image embedder). The vector is persisted separately so you don't re-call the API on restart. |
+
+`Vectorizer.vectorize()` **must be thread-safe** — multiple build / search
+threads call it concurrently on the same instance — and **must never return
+`null`** for an entity that's present (throws `IllegalStateException` at insert
+time). Override `vectorizeAll(List<E>)` to batch-vectorize against APIs that
+support it (e.g. OpenAI's `input: ["a", "b", "c"]` form) — the default loops
+one at a time.
 
 ```java
+// Embedded — vector lives on the entity
 public class DocVectorizer extends Vectorizer<Doc> {
     @Override public float[] vectorize(Doc d) { return d.embedding(); }
     @Override public boolean isEmbedded()     { return true; }
 }
+
+// Computed — call out to an embedding API once at insert time
+public class OpenAIVectorizer extends Vectorizer<Doc> {
+    @Override public float[] vectorize(Doc d) {
+        return openai.embed(d.text());
+    }
+    @Override public List<float[]> vectorizeAll(List<? extends Doc> docs) {
+        return openai.embedBatch(docs.stream().map(Doc::text).toList());
+    }
+}
+```
+
+#### Configuration
+
+`VectorIndexConfiguration.builder()` exposes HNSW + lifecycle parameters:
+
+| Parameter | Default | What it controls |
+|---|---|---|
+| `dimension` | (required) | Length of every `float[]`. Mismatch throws at insert. |
+| `similarityFunction` | `COSINE` | `COSINE`, `DOT_PRODUCT`, or `EUCLIDEAN`. |
+| `maxDegree` | 16 | HNSW "M" — neighbours per node. Higher = better recall, more memory. |
+| `beamWidth` | 100 | HNSW "efConstruction" — build-time candidate fan-out. Use ≥ 2× `maxDegree`. |
+| `minSearchBeamWidth` | — | Minimum search-time `ef`. |
+| `neighborOverflow` | 1.2 | Overflow during construction. |
+| `alpha` | 1.2 | Pruning parameter. |
+| `onDisk` | `false` | Memory-map graph from disk. Required for datasets > RAM. |
+| `indexDirectory` | `null` | Path for `{name}.graph` + `{name}.meta` files. Required if `onDisk=true`. |
+| `enablePqCompression` | `false` | Product Quantization. **Forces `maxDegree=32`** (FusedPQ). |
+| `pqSubspaces` | 0 (auto: `dim/4`) | Must divide `dimension` evenly. |
+| `parallelOnDiskWrite` | `false` | Multi-threaded persist. Faster for huge indices, more resources. |
+| `eventualIndexing` | `false` | Defer graph mutations to background thread (vector store still updated synchronously). Reduces add latency, search briefly stale. |
+| `persistenceIntervalMs` | 0 (off) | Background persist every N ms. |
+| `minChangesBetweenPersists` | 100 | Persist threshold. |
+| `persistOnShutdown` | `true` | Flush on `close()`. |
+| `optimizationIntervalMs` | 0 (off) | Background `cleanup()` every N ms. |
+| `minChangesBetweenOptimizations` | 1000 | Optimize threshold. |
+| `optimizeOnShutdown` | `false` | Run cleanup on `close()`. |
+
+Factory presets cover the common cases — start there, override only what you
+need:
+
+| Preset | What you get |
+|---|---|
+| `forSmallDataset(dim)` | < 10K vectors. In-memory. `maxDegree=16`, `beamWidth=100`. |
+| `forMediumDataset(dim)` / `(dim, indexDirectory)` | 10K–1M. Optionally on-disk. |
+| `forLargeDataset(dim, indexDirectory)` / `(dim, dir, enableCompression)` | > 1M. On-disk by default; PQ optional. |
+| `forHighPrecision(dim)` / `(dim, indexDirectory)` | Maximum recall. `maxDegree=48-64`, `beamWidth=400-500`. |
+
+Each preset also has a `builderFor*` variant that returns a `Builder` so you
+can override one or two parameters without losing the rest.
+
+#### Building, registering, searching
+
+Lucene and vector indices are **not** declared on the `GigaMap.Builder` — they
+register post-build on `map.index()`. Multiple named vector indices per map
+are allowed (e.g. one for title embeddings, one for body embeddings).
+
+```java
+GigaMap<Doc> docs = GigaMap.New();
 
 VectorIndexConfiguration cfg = VectorIndexConfiguration.builder()
     .dimension(768)
     .similarityFunction(VectorSimilarityFunction.COSINE)
     .build();
 
-GigaMap<Doc> docs = GigaMap.New();
 VectorIndices<Doc> vectorIndices = docs.index().register(VectorIndices.Category());
 VectorIndex<Doc>   embeddings    = vectorIndices.add("embeddings", cfg, new DocVectorizer());
 
 docs.add(new Doc("Hello world", vec));
 
+// Top-k by query vector
 VectorSearchResult<Doc> top = embeddings.search(queryVector, 10);
 for (var entry : top) {
     System.out.println(entry.score() + ": " + entry.entity().title());
 }
+
+// Top-k similar to an existing entity ("more like this") — convenience overload
+VectorSearchResult<Doc> similar = embeddings.search(someDoc, 10);
+
+// Override search-time beam width per query (latency vs recall)
+VectorSearchResult<Doc> highRecall = embeddings.search(queryVector, 10, 200);
+
+// Round-trip a stored vector by entity id
+float[] stored = embeddings.getVector(docs.add(new Doc(...)));
 ```
 
-Supported `VectorSimilarityFunction`:
+Use `vectorIndices.ensure(name, cfg, vectorizer)` instead of `.add(...)` when
+the index might already exist (e.g. on the second startup of the application
+after the GigaMap has been deserialized from storage). On restart, persisted
+indices come back automatically — there's no manual rewire step.
 
-| Function | Use |
-|---|---|
-| `COSINE` | Text embeddings and anything else where direction matters. |
-| `DOT_PRODUCT` | Already-normalized vectors — skips the normalization step. |
-| `EUCLIDEAN` | Abstract geometric spaces where magnitude matters. |
+#### Sub-queries
 
-`dimension` must match every `float[]` you add — mixing dimensions throws at
-`add` time. Changing `dimension` or `similarityFunction` after the fact
-requires rebuilding the index (new `vectorIndices.add(name, newCfg, …)` and
-re-vectorize). Multiple named vector indexes per map are allowed.
+`VectorSearchResult<E>` is a `SubQuery`. Combine with bitmap and Lucene via
+`.and(...)`:
 
-Combine with bitmap or Lucene filters via `.and(...)` — `VectorSearchResult`
-is a `SubQuery`. A `ScoredSearchResult` variant preserves scores across the
-intersection (Pattern J).
+```java
+VectorSearchResult<Doc> hits = embeddings.search(queryVec, 50);
+List<Doc> tech = docs.query(category.is("tech"))
+    .and(hits)
+    .toList();
+```
+
+When used as a `SubQuery` only the matched id set is intersected — scores are
+dropped. Keep scores by inverting the chain (`hits.and(docs.query(...))`)
+which returns a `ScoredSearchResult` (Pattern J).
+
+#### Limits and gotchas
+
+- **~2.1 billion vectors per index.** JVector uses `int` for graph node
+  ordinals. Shard across multiple `VectorIndex` instances if you exceed it.
+- **Vectorizer must be thread-safe and non-null.** See `references/pitfalls-deep-dive.md`.
+- **PQ compression silently sets `maxDegree=32`** (FusedPQ requirement).
+  Don't fight it.
+- **Dimension is fixed at build.** Mixing 768-dim and 1024-dim throws on
+  `add`. Changing dimension means a new index name + rebuild.
+- **On-disk format version 2.** Older files are auto-rebuilt from the source
+  vectors on first load — one-time cold-start cost, no data loss.
+- **`eventualIndexing=true` decouples vector-store writes (synchronous) from
+  graph mutations (queued).** Search may miss recent adds until the queue
+  drains. `optimize()`, `persistToDisk()`, and `close()` all drain first, so
+  consistency is restored at those checkpoints.
+
+Deeper treatment: `references/vector-deep-dive.md` covers HNSW parameter
+tuning, mode selection guide, on-disk lifecycle, and the eventual-indexing
+consistency model.
 
 ## Idiomatic patterns
 
@@ -741,8 +874,12 @@ iterators.
 - `references/query-dsl.md` — every query operator (`is`, `in`, `between`,
   `before`, `.and`, `.or`, `.not`, `notIn`, multi-value `.all`, spatial
   operators, predicates, scored-result handling).
-- `references/examples-expanded.md` — realistic end-to-end programs.
+- `references/examples-expanded.md` — realistic end-to-end programs (incl.
+  vector search, embedded-mode RAG-style retrieval, on-disk + PQ).
 - `references/pitfalls-deep-dive.md` — each pitfall above with reproducer.
+- `references/vector-deep-dive.md` — HNSW parameter tuning, embedded vs
+  computed mode, on-disk lifecycle, PQ rerank, eventual-indexing semantics,
+  recall vs latency trade-offs.
 
 ## Upstream sources
 

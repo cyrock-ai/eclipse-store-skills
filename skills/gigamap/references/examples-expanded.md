@@ -220,3 +220,223 @@ root.people().store();
 
 Unlike plain storage, you call `remove` on the GigaMap, not "remove reference
 from collection" — GigaMap owns the collection semantics.
+
+## Example 9 — Vector search: end-to-end with embedded mode
+
+A document with its embedding stored on the entity (e.g. you batch-computed
+vectors at ingest time). Embedded mode avoids duplicate storage.
+
+```java
+// Doc.java
+package app;
+
+public record Doc(String id, String title, String text, float[] embedding) {}
+```
+
+```java
+// DocVectorizer.java
+package app;
+
+import org.eclipse.store.gigamap.jvector.Vectorizer;
+
+public class DocVectorizer extends Vectorizer<Doc> {
+    @Override public float[] vectorize(Doc d) { return d.embedding(); }
+    @Override public boolean isEmbedded()     { return true; }
+}
+```
+
+```java
+// DocIndices.java
+package app;
+
+import org.eclipse.store.gigamap.types.IndexerString;
+
+public final class DocIndices {
+    public static final IndexerString<Doc> id = new IndexerString.Abstract<>() {
+        @Override public String getString(Doc d) { return d.id(); }
+    };
+    public static final IndexerString<Doc> title = new IndexerString.Abstract<>() {
+        @Override public String getString(Doc d) { return d.title(); }
+    };
+    private DocIndices() {}
+}
+```
+
+```java
+// AppRoot.java
+package app;
+
+import org.eclipse.store.gigamap.types.GigaMap;
+
+public class AppRoot {
+    private final GigaMap<Doc> docs = GigaMap.<Doc>Builder()
+        .withBitmapIdentityIndex(DocIndices.id)
+        .withBitmapIndex(DocIndices.title)
+        .build();
+    public GigaMap<Doc> docs() { return docs; }
+}
+```
+
+```java
+// Main.java
+package app;
+
+import java.nio.file.Paths;
+
+import org.eclipse.store.gigamap.jvector.VectorIndex;
+import org.eclipse.store.gigamap.jvector.VectorIndexConfiguration;
+import org.eclipse.store.gigamap.jvector.VectorIndices;
+import org.eclipse.store.gigamap.jvector.VectorSearchResult;
+import org.eclipse.store.gigamap.jvector.VectorSimilarityFunction;
+import org.eclipse.store.storage.embedded.types.EmbeddedStorage;
+import org.eclipse.store.storage.embedded.types.EmbeddedStorageManager;
+
+public class Main {
+    public static void main(String[] args) {
+        try (EmbeddedStorageManager storage =
+                 EmbeddedStorage.start(new AppRoot(), Paths.get("data"))) {
+
+            AppRoot root = (AppRoot) storage.root();
+            GigaMap<Doc> docs = root.docs();
+
+            // ensure() is idempotent — safe across restarts.
+            VectorIndices<Doc> vectorIndices =
+                docs.index().register(VectorIndices.Category());
+
+            VectorIndexConfiguration cfg = VectorIndexConfiguration.builder()
+                .dimension(768)
+                .similarityFunction(VectorSimilarityFunction.COSINE)
+                .build();
+
+            VectorIndex<Doc> embeddings =
+                vectorIndices.ensure("embeddings", cfg, new DocVectorizer());
+
+            if (docs.size() == 0) {
+                docs.add(new Doc("d1", "Eclipse Store overview", "...", embed("...")));
+                docs.add(new Doc("d2", "JVector internals",      "...", embed("...")));
+                docs.add(new Doc("d3", "Cooking pasta",           "...", embed("...")));
+                docs.store();
+            }
+
+            float[] queryVec = embed("How does the persistent vector index work?");
+            VectorSearchResult<Doc> top = embeddings.search(queryVec, 5);
+
+            for (var entry : top) {
+                System.out.printf("%.3f  %s%n", entry.score(), entry.entity().title());
+            }
+        }
+    }
+
+    static float[] embed(String text) { /* call your embedding model */ }
+}
+```
+
+Run with `--add-modules jdk.incubator.vector` for SIMD acceleration.
+
+## Example 10 — On-disk + PQ for a 5M-vector corpus
+
+Production-grade preset: on-disk graph, PQ compression, background persist
+and optimize. Ideal for a > RAM corpus where you want bounded memory and
+durable index files.
+
+```java
+VectorIndexConfiguration cfg = VectorIndexConfiguration
+    .builderForLargeDataset(768, Path.of("data/vectors"))
+    .similarityFunction(VectorSimilarityFunction.COSINE)
+    .enablePqCompression(true)        // forces maxDegree = 32
+    .pqSubspaces(192)                 // must divide 768 evenly
+    .persistenceIntervalMs(30_000)
+    .minChangesBetweenPersists(500)
+    .optimizationIntervalMs(120_000)
+    .minChangesBetweenOptimizations(5_000)
+    .persistOnShutdown(true)
+    .build();
+
+VectorIndex<Doc> embeddings = vectorIndices.ensure("embeddings", cfg, new DocVectorizer());
+```
+
+The on-disk graph file `data/vectors/embeddings.graph` plus the
+`embeddings.meta` sidecar reload automatically on the next startup. If a
+mismatch is detected (older format version, count collision after restart),
+the index silently rebuilds from `vectorStore`.
+
+## Example 11 — Sub-query: vector + bitmap + Lucene intersection
+
+"Top-10 documents semantically similar to *X*, restricted to category=tech,
+that also match a Lucene phrase query."
+
+```java
+VectorSearchResult<Doc> vecHits  = embeddings.search(queryVec, 100);
+LuceneSearchResult<Doc> textHits = lucene.search("\"distributed systems\"", 200);
+
+List<Doc> finalHits = docs.query(category.is("tech"))
+    .and(vecHits)
+    .and(textHits)
+    .toList();
+```
+
+To preserve vector ranking, invert the chain so the scored side drives:
+
+```java
+ScoredSearchResult<Doc> scored = embeddings.search(queryVec, 100)
+    .and(docs.query(category.is("tech")))
+    .and(textHits);
+
+for (var entry : scored) {
+    System.out.printf("%.3f  %s%n", entry.score(), entry.entity().title());
+}
+```
+
+The two forms differ only in what's preserved — the **id intersection** is
+identical.
+
+## Example 12 — "More like this" recommendations
+
+`VectorIndex.search(E queryEntity, int k)` is a convenience overload that
+vectorizes the entity and runs the search:
+
+```java
+Doc seed = docs.query(DocIndices.id.is("d42")).findFirst().orElseThrow();
+VectorSearchResult<Doc> similar = embeddings.search(seed, 10);
+
+similar.stream()
+    .filter(e -> !e.entity().id().equals(seed.id()))   // drop the seed itself
+    .limit(9)
+    .forEach(e -> System.out.println(e.entity().title()));
+```
+
+Useful for product recommendations, related articles, deduplication
+candidates, etc.
+
+## Example 13 — Computed mode: vectorize via an external API
+
+When vectors come from an external embedding service, set
+`isEmbedded() == false` (the default) so vectors are persisted in an
+internal `GigaMap<VectorEntry>`. They survive restarts without re-calling
+the API.
+
+```java
+public class OpenAIVectorizer extends Vectorizer<Article> {
+    private final OpenAIClient client;
+
+    public OpenAIVectorizer(OpenAIClient client) { this.client = client; }
+
+    @Override
+    public float[] vectorize(Article a) {
+        return client.embed(a.text());
+    }
+
+    @Override
+    public List<float[]> vectorizeAll(List<? extends Article> articles) {
+        // Single batch call — much cheaper than N round-trips.
+        return client.embedBatch(articles.stream().map(Article::text).toList());
+    }
+
+    // isEmbedded() defaults to false → vectors are persisted in vectorStore
+}
+```
+
+`vectorize()` is called once per `add()`. `vectorizeAll()` kicks in on
+batch paths (`addAll`, internal training-data collection, full graph
+rebuilds). The vectorizer **must be thread-safe** — the build-time graph
+constructor invokes it from worker threads.
