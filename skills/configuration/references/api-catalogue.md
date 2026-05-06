@@ -9,7 +9,7 @@ Artifact: `org.eclipse.store:storage-embedded-configuration`.
 | Method | Purpose |
 |---|---|
 | `static EmbeddedStorageConfigurationBuilder Builder()` | New fluent builder. |
-| `static EmbeddedStorageConfigurationBuilder load()` | Loads the default config (classpath `eclipsestore.properties` or path in system property `org.eclipse.store.configuration.path`). |
+| `static EmbeddedStorageConfigurationBuilder load()` | Loads the default config (classpath `eclipsestore.properties` or path in system property `org.eclipse.store.storage.configuration.path`). |
 | `static EmbeddedStorageConfigurationBuilder load(String path)` | Loads from classpath path; auto-detects INI/XML/properties. |
 | `static EmbeddedStorageConfigurationBuilder load(ConfigurationLoader, ConfigurationParser)` | Loads from any source + parser; used for YAML/HOCON/JSON. |
 
@@ -39,9 +39,9 @@ Full list corresponds to property names in `EmbeddedStorageConfigurationProperty
 | `setDataFileSuffix(String)` | `data-file-suffix` | `"dat"` |
 | `setTransactionFilePrefix(String)` | `transaction-file-prefix` | `"transactions_"` |
 | `setTransactionFileSuffix(String)` | `transaction-file-suffix` | `"sft"` |
-| `setTypeDictionaryFileName(String)` | `type-dictionary-filename` | `"PersistenceTypeDictionary.ptd"` |
+| `setTypeDictionaryFileName(String)` | `type-dictionary-file-name` | `"PersistenceTypeDictionary.ptd"` |
 | `setRescuedFileSuffix(String)` | `rescued-file-suffix` | `"bak"` |
-| `setLockFileName(String)` | `lock-filename` | `"used.lock"` |
+| `setLockFileName(String)` | `lock-file-name` | `"used.lock"` |
 
 ### Housekeeping
 
@@ -77,7 +77,7 @@ Full list corresponds to property names in `EmbeddedStorageConfigurationProperty
 |---|---|
 | `createConfiguration()` | `StorageConfiguration` |
 | `createEmbeddedStorageFoundation()` | `EmbeddedStorageFoundation<?>` |
-| `createEmbeddedStorageManager()` | **Started** `EmbeddedStorageManager` |
+| `createEmbeddedStorageManager()` | `EmbeddedStorageManager` (unstarted; call `.start()`) |
 
 ## `EmbeddedStorageConfigurationPropertyNames`
 
@@ -97,8 +97,8 @@ Package: `org.eclipse.serializer.configuration.types`.
 | `ConfigurationLoader.New(File)` | File system loader. |
 | `ConfigurationParserIni.New()` | INI parser. |
 | `ConfigurationParserXml.New()` | XML parser. |
-| `ConfigurationParserYaml.New()` | YAML parser — requires `configuration-yaml`. |
-| `ConfigurationParserHocon.New()` | HOCON/JSON parser — requires `configuration-hocon`. |
+| `ConfigurationParserYaml.New()` | YAML parser — `org.eclipse.serializer.configuration.yaml.types`; requires `configuration-yaml`. |
+| `ConfigurationParserHocon.New()` | HOCON/JSON parser — `org.eclipse.serializer.configuration.hocon.types`; requires `configuration-hocon`. |
 
 ## Foundation-level configuration (advanced)
 

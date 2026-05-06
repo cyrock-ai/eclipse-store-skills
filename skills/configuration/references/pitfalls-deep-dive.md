@@ -1,6 +1,6 @@
 # Pitfalls deep-dive — configuration
 
-## 1. `createEmbeddedStorageManager()` returns a *started* manager
+## 1. `createEmbeddedStorageManager()` returns an *unstarted* manager
 
 **Reproducer.**
 
@@ -8,15 +8,15 @@
 var m = EmbeddedStorageConfiguration.Builder()
     .setStorageDirectory("data")
     .createEmbeddedStorageFoundation()
-    .createEmbeddedStorageManager();   // already started
-m.start();                             // no-op or surprising behaviour
+    .createEmbeddedStorageManager();   // NOT yet started
+AppRoot root = (AppRoot) m.root();     // throws — manager not running
 ```
 
-**Root cause.** `createEmbeddedStorageManager()` creates *and* starts. `.start()`
-afterwards is redundant.
+**Root cause.** `createEmbeddedStorageManager()` only creates the manager. It
+does not start it.
 
-**Fix.** Drop the second `.start()`, or hold a foundation and call
-`.createEmbeddedStorageManager()` only when ready.
+**Fix.** Call `.start()` on the result, or use `EmbeddedStorage.start(...)` /
+`foundation.start(...)` which return a started manager.
 
 ## 2. Channel count not a power of 2
 
@@ -146,7 +146,7 @@ housekeeping uses up to this much. Small apps with idle churn don't need it this
 **Fix.** Default (10 ms) is fine for most apps. Raise only if housekeeping is visibly
 falling behind (growing `_live.sfl`, bloating deletion-directory-if-off).
 
-## 10. Auto-start returns a started manager during tests
+## 10. Forgot to shut down the manager between tests
 
 **Reproducer.**
 
@@ -157,6 +157,7 @@ void test() {
         .setStorageDirectory(tempDir.toString())
         .createEmbeddedStorageFoundation()
         .createEmbeddedStorageManager();
+    m.start();
     // forgot to shutdown
 }
 ```
@@ -170,6 +171,7 @@ try (var m = EmbeddedStorageConfiguration.Builder()
         .setStorageDirectory(tempDir.toString())
         .createEmbeddedStorageFoundation()
         .createEmbeddedStorageManager()) {
+    m.start();
     // ...
 }
 ```
