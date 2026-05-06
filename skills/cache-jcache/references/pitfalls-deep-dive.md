@@ -69,8 +69,7 @@ tests, use fresh manager per test.
 cache.unwrap(CacheStatisticsMXBean.class).getCacheHits();   // always 0
 ```
 
-**Fix.** `setStatisticsEnabled(true)` on a JCache `MutableConfiguration`, or
-`enableStatistics(true)` on the Eclipse Store `CacheConfiguration.Builder`.
+**Fix.** `cfg.setStatisticsEnabled(true)` at build time.
 
 ## 8. Storage-backed cache pointing at the same directory as your main storage
 
@@ -114,6 +113,5 @@ Wrong or missing `hibernate.cache.region.factory_class` → L2 doesn't use Eclip
 Store; silently falls back to whatever Hibernate decides.
 
 **Fix.** Set it to
-`org.eclipse.store.cache.hibernate.types.CacheRegionFactory` (or the alias
-`jcache`) and verify with Hibernate's logs. Don't also set
-`hibernate.javax.cache.provider` — that's for Hibernate's `JCacheRegionFactory`.
+`org.eclipse.store.cache.hibernate.types.CacheRegionFactory` and verify
+with Hibernate's logs.

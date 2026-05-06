@@ -46,33 +46,16 @@ Package: `org.eclipse.store.cache.types`.
 
 Extends `javax.cache.configuration.CompleteConfiguration<K,V>`.
 
-Static factory methods on `CacheConfiguration` (verified against
-`store/cache/cache/.../CacheConfiguration.java`):
-
-| Factory | Purpose |
+| Builder method | Purpose |
 |---|---|
-| `CacheConfiguration.Builder(Class<K>, Class<V>)` | Not storage-backed. The cache name is supplied later in `cacheManager.createCache(name, cfg)`. |
-| `CacheConfiguration.Builder(Class<K>, Class<V>, String cacheName, StorageManager)` | Storage-backed. Accepts an `EmbeddedStorageManager` (subtype of `StorageManager`). |
-| `CacheConfiguration.Builder(Class<K>, Class<V>, URI, String cacheName, StorageManager)` | Storage-backed with a custom URI prefix for the slot in the storage root. |
-| `CacheConfiguration.Builder(Configuration)` | Build from an Eclipse `Configuration` instance (e.g. loaded from a properties file). |
-| `CacheConfiguration.Builder(Class<K>, Class<V>, Configuration)` | Typed variant of the above. |
-
-Builder fluent methods:
-
-| Method | Purpose |
-|---|---|
+| `CacheConfiguration.Builder(K.class, V.class)` | Not storage-backed. |
+| `CacheConfiguration.Builder(K.class, V.class, name, StorageManager)` | Storage-backed. |
 | `.expiryPolicyFactory(Factory<ExpiryPolicy>)` | Plug expiry. |
-| `.evictionManagerFactory(Factory<EvictionManager<K, V>>)` | Plug eviction. The default factory is `CacheConfiguration.DefaultEvictionManagerFactory()`. |
-| `.cacheLoaderFactory(Factory<CacheLoader<K, V>>)` | Plug a read-through loader. |
-| `.cacheWriterFactory(Factory<CacheWriter<? super K, ? super V>>)` | Plug a write-through writer. |
-| `.readThrough(boolean)` | Toggle read-through mode (requires a `cacheLoaderFactory`). |
-| `.writeThrough(boolean)` | Toggle write-through mode (requires a `cacheWriterFactory`). |
+| `.evictionManagerFactory(...)` | Plug eviction. |
 | `.storeByValue(boolean)` | Serialize on every op. |
-| `.enableStatistics(boolean)` | Enable JMX statistics (off by default). |
-| `.enableManagement(boolean)` | Enable JMX management bean. |
-| `.addListenerConfiguration(CacheEntryListenerConfiguration<K, V>)` | Attach a listener (Eclipse Store builder method, equivalent to JCache `MutableConfiguration.addCacheEntryListenerConfiguration`). |
-| `.serializerFoundation(SerializerFoundation<?>)` | Override the serializer used for store-by-value. |
-| `.build()` | Returns `CacheConfiguration<K, V>`. |
+| `.enableStatistics(boolean)` | Enable JMX/stats. |
+| `.enableManagement(boolean)` | Enable JMX. |
+| `.build()` | Returns `CacheConfiguration`. |
 
 ### `CacheManager`
 
@@ -108,12 +91,8 @@ simpler.
 ```properties
 hibernate.cache.use_second_level_cache=true
 hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
+hibernate.javax.cache.provider=org.eclipse.store.cache.types.CachingProvider
 ```
-
-Short aliases `jcache` and `CacheRegionFactory` are also registered.
-
-Do **not** also set `hibernate.javax.cache.provider` — that property is for
-Hibernate's own `JCacheRegionFactory` (a different strategy).
 
 Per-region expiry uses Hibernate's standard `hibernate.cache.<region>.ttl`.
 

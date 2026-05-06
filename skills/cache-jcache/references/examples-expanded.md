@@ -141,11 +141,8 @@ Spring tries to use it, or via a JCache XML config referenced from
 hibernate.cache.use_second_level_cache=true
 hibernate.cache.use_query_cache=true
 hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
-# Short alias also works: hibernate.cache.region.factory_class=jcache
+hibernate.javax.cache.provider=org.eclipse.store.cache.types.CachingProvider
 ```
-
-Do **not** also set `hibernate.javax.cache.provider` — that property is for
-Hibernate's own `JCacheRegionFactory` (a different strategy).
 
 Entities:
 
@@ -179,7 +176,7 @@ System.out.println("misses: "  + stats.getCacheMisses());
 System.out.println("rate: "    + stats.getCacheHitPercentage() + "%");
 ```
 
-Requires `.enableStatistics(true)` on the config (off by default).
+Requires `.enableStatistics(true)` on the config.
 
 ## Example 7 — Near-cache topology
 
