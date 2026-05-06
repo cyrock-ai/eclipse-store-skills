@@ -21,15 +21,15 @@ no per-region partitioning.
 
 ## Eclipse Store — `LockedExecutor`
 
-Package: `org.eclipse.store.afs.types` (re-exported in the storage module).
+Package: `org.eclipse.serializer.concurrency`.
 
 | Symbol | Purpose |
 |---|---|
 | `LockedExecutor.New() : LockedExecutor` | Factory — creates an executor backed by a fresh `ReentrantReadWriteLock`. |
-| `executor.read(Supplier<T>) : T` | Run the supplier under the read lock. Multiple readers proceed in parallel. |
-| `executor.read(Runnable) : void` | Read-lock variant for side-effecting reads. |
-| `executor.write(Supplier<T>) : T` | Run under the write lock. Exclusive. |
-| `executor.write(Runnable) : void` | Write-lock variant. |
+| `executor.read(Producer<R>) : R` | Run the producer under the read lock. Multiple readers proceed in parallel. |
+| `executor.read(Action) : void` | Read-lock variant for side-effecting reads. |
+| `executor.write(Producer<R>) : R` | Run under the write lock. Exclusive. |
+| `executor.write(Action) : void` | Write-lock variant. |
 
 A `LockedExecutor` is a single RW lock. Hold one per protected region (one per
 aggregate, one per tenant, etc.) if you want partitioned locking without
@@ -121,7 +121,7 @@ patterns.
 
 - `XThreads` → `org.eclipse.serializer.concurrency`
 - `LockedExecutor`, `LockScope`, `StripeLockedExecutor`, `StripeLockScope`
-  → `org.eclipse.store.afs.types` (helper module re-exported by storage)
+  → `org.eclipse.serializer.concurrency`
 - `@Read`, `@Write`, `@Mutex`, `LockAspect`
   → `org.eclipse.store.integrations.spring.boot.types.concurrent`
 - `Storer`, `BatchStorer` → `org.eclipse.serializer.persistence.types` /

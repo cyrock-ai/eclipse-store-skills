@@ -85,7 +85,7 @@ blocks until all readers have released. Verbose; the try/finally is mandatory
 ## 3. `LockedExecutor`
 
 ```java
-import org.eclipse.store.afs.types.LockedExecutor;
+import org.eclipse.serializer.concurrency.LockedExecutor;
 
 public class CustomerService {
     private final EmbeddedStorageManager storage;
@@ -119,7 +119,7 @@ with non-locked work, etc.).
 ## 4. `LockScope` — inheritance form
 
 ```java
-import org.eclipse.store.afs.types.LockScope;
+import org.eclipse.serializer.concurrency.LockScope;
 
 public class CustomerService extends LockScope {
     private final EmbeddedStorageManager storage;
@@ -151,7 +151,7 @@ because you cannot pass the executor around.
 ## 5. Striped — `StripeLockedExecutor`
 
 ```java
-import org.eclipse.store.afs.types.StripeLockedExecutor;
+import org.eclipse.serializer.concurrency.StripeLockedExecutor;
 
 public class TenantOrderService {
     private final EmbeddedStorageManager storage;
