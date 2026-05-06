@@ -134,6 +134,7 @@ CacheManager    cacheManager = provider.getCacheManager();
 CacheConfiguration<Integer, String> cfg = CacheConfiguration
     .Builder(Integer.class, String.class, "jCache", storage)
     .expiryPolicyFactory(CreatedExpiryPolicy.factoryOf(Duration.ONE_HOUR))
+    .enableStatistics(true)
     .build();
 
 Cache<Integer, String> cache = cacheManager.createCache("jCache", cfg);
@@ -196,39 +197,80 @@ CacheEntryListenerConfiguration<Integer, String> listenerCfg =
         true,      // oldValueRequired
         true);     // synchronous
 
-cfg.addCacheEntryListenerConfiguration(listenerCfg);
+// On a JCache MutableConfiguration (Pattern A):
+mutableCfg.addCacheEntryListenerConfiguration(listenerCfg);
+
+// On the Eclipse Store CacheConfiguration.Builder (Pattern B):
+builder.addListenerConfiguration(listenerCfg);
 ```
 
 Listeners are synchronous by default — a slow listener blocks cache operations.
 
 ### Pattern F — Eviction (LRU / LFU / TTL)
 
-```java
-EvictionManagerFactory<Integer, String> eviction =
-    // Eclipse Store-specific: your own evictor, or built-in LRU
-    ...;
+The builder accepts a `Factory<EvictionManager<K, V>>` (the standard JSR-107
+`javax.cache.configuration.Factory`, parameterised over Eclipse Store's
+`EvictionManager<K, V>`). A built-in default factory is available as
+`CacheConfiguration.DefaultEvictionManagerFactory()`.
 
-cfg.evictionManagerFactory(eviction);
+```java
+import javax.cache.configuration.Factory;
+import org.eclipse.store.cache.types.EvictionManager;
+import org.eclipse.store.cache.types.CacheConfiguration;
+
+// Built-in default
+Factory<EvictionManager<Integer, String>> eviction =
+    CacheConfiguration.DefaultEvictionManagerFactory();
+
+CacheConfiguration<Integer, String> cfg = CacheConfiguration
+    .Builder(Integer.class, String.class, "jCache", storage)
+    .evictionManagerFactory(eviction)
+    .build();
 ```
 
-Exact factory names depend on the Eclipse Store version; check
-`org.eclipse.store.cache.types.EvictionManager` sub-interfaces.
+To plug in your own evictor, implement `EvictionManager<K, V>` (in
+`org.eclipse.store.cache.types`) and supply it as a `Factory<EvictionManager<K, V>>`
+— typically `() -> new MyEvictionManager<>()`.
 
 ### Pattern G — Spring `@Cacheable` with Eclipse Store
 
-Spring auto-detects JCache providers on the classpath. With the `cache`
-artifact, `@EnableCaching` picks up Eclipse Store.
+Spring Boot 3 auto-configures JCache when `spring-boot-starter-cache` is on the
+classpath alongside a JCache provider. **No manual `@Bean` declarations are
+needed** — set the properties and add `@EnableCaching`:
+
+`pom.xml`:
+
+```xml
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-cache</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.eclipse.store</groupId>
+  <artifactId>cache</artifactId>
+  <version>${eclipse-store.version}</version>
+</dependency>
+```
+
+`application.properties`:
+
+```properties
+spring.cache.type=jcache
+spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider
+spring.cache.cache-names=customers,orders
+```
+
+`CacheConfig.java`:
 
 ```java
 @Configuration
 @EnableCaching
-public class CacheConfig {
-    @Bean
-    public JCacheManagerFactoryBean jCacheManager() {
-        return new JCacheManagerFactoryBean();   // Spring discovery
-    }
-}
+public class CacheConfig {}
+```
 
+`CustomerService.java`:
+
+```java
 @Service
 public class CustomerService {
     @Cacheable("customers")
@@ -236,9 +278,17 @@ public class CustomerService {
 }
 ```
 
-Spring's JCache manager hands out Eclipse Store's caches. For storage-backed
-caches, programmatically create the cache first (Pattern B) with the name
-Spring expects.
+Why no manual bean? Spring Boot's auto-config creates both the JCache
+`CacheManager` (`javax.cache.CacheManager`) and the Spring adapter
+(`JCacheCacheManager`, which implements Spring's
+`org.springframework.cache.CacheManager`) for you. A manual `@Bean public
+JCacheManagerFactoryBean` produces only the JCache `CacheManager` — `@Cacheable`
+needs the Spring `CacheManager`, so the manual approach is incomplete and
+generally unnecessary with the starter on the classpath.
+
+For storage-backed caches, programmatically create the cache at startup (Pattern
+B) with the name Spring expects, or point Spring at a JCache XML config via
+`spring.cache.jcache.config`.
 
 ### Pattern H — Hibernate second-level cache
 
@@ -246,9 +296,20 @@ Add `cache-hibernate` and set Hibernate properties:
 
 ```properties
 hibernate.cache.use_second_level_cache=true
-hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.EclipseStoreCacheRegionFactory
-hibernate.javax.cache.provider=org.eclipse.store.cache.types.CachingProvider
+hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
 ```
+
+The strategy registration provider also registers the short aliases `jcache` and
+`CacheRegionFactory`, so this works too:
+
+```properties
+hibernate.cache.region.factory_class=jcache
+```
+
+Eclipse Store's region factory extends `RegionFactoryTemplate` directly — it does
+**not** delegate through JCache. The `hibernate.javax.cache.provider` property is
+only needed if you instead use Hibernate's own `JCacheRegionFactory` (a different
+strategy that goes through JCache). Don't set both.
 
 Configure expiry/eviction per region via standard Hibernate region settings
 plus (optionally) an Eclipse-Store-specific properties file.
@@ -320,8 +381,11 @@ Store) is fine; expecting the cache to be the system of record is not.
 7. **Spring Boot's cache auto-config might pick a different provider** if
    multiple are on the classpath. Pin with
    `spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider`.
-8. **Statistics must be enabled**: `cfg.setStatisticsEnabled(true)`. Off by
-   default.
+8. **Statistics must be enabled**: off by default. Call
+   `setStatisticsEnabled(true)` on a JCache `MutableConfiguration` (Pattern A) or
+   `enableStatistics(true)` on the Eclipse Store `CacheConfiguration.Builder`
+   (Pattern B). Same for management beans (`setManagementEnabled` /
+   `enableManagement`).
 
 ## Interactions with other skills
 
@@ -347,15 +411,23 @@ one — either works).
 **"How do I make a large cache not dominate heap?"** → Eviction policy + a short
 TTL + offload via storage backing. Or use GigaMap if you need indexed access.
 
-**"How do I use it in Hibernate?"** → `cache-hibernate` artifact + region
-factory property + standard JCache provider property.
+**"How do I use it in Hibernate?"** → `cache-hibernate` artifact +
+`hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory`
+(or the alias `jcache`). Eclipse Store's factory does not delegate through JCache,
+so don't also set `hibernate.javax.cache.provider`.
 
-**"How do I use it with Spring `@Cacheable`?"** → `@EnableCaching` + ensure
-Eclipse Store is the discovered provider. Spring handles the rest.
+**"How do I use it with Spring `@Cacheable`?"** → `spring-boot-starter-cache` +
+`spring.cache.type=jcache` + `spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider`
++ `@EnableCaching`. Spring Boot's auto-config wires both the JCache and Spring
+`CacheManager` beans; no manual `JCacheManagerFactoryBean` is needed.
 
 **"What about JCache's `Cache.Entry` vs. `Map.Entry`?"** → Different interfaces;
-JCache's `Entry` has extra getters (`getExistingValue`, etc.). Don't assume
-`Map.Entry` interchangeability.
+JCache's `Cache.Entry<K, V>` exposes only `getKey()` and `getValue()` — no
+`setValue()` like `Map.Entry`. Mutation goes through
+`javax.cache.processor.MutableEntry` (passed to an `EntryProcessor`), which adds
+`exists()`, `setValue(V)`, and `remove()`. Event payloads
+(`javax.cache.event.CacheEntryEvent`) extend `Cache.Entry` and add
+`getOldValue()`. Don't assume `Map.Entry` interchangeability.
 
 **"Can I configure from a properties file?"** → JCache supports `config` URIs
 that point to XML — provider-specific. Eclipse Store honors
@@ -364,12 +436,13 @@ that point to XML — provider-specific. Eclipse Store honors
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — full Eclipse Store + JCache API tables.
-- `references/hibernate-l2.md` — complete Hibernate setup.
-- `references/spring-cacheable.md` — Spring config end-to-end.
-- `references/near-cache-topologies.md` — local + remote cache patterns.
-- `references/examples-expanded.md` — five end-to-end examples.
-- `references/pitfalls-deep-dive.md` — each pitfall with reproducer.
+- `references/api-catalogue.md` — full Eclipse Store + JCache API tables, builder
+  factory variants, configuration property names, Hibernate / Spring property
+  reference.
+- `references/examples-expanded.md` — end-to-end examples covering standalone
+  cache, storage-backed cache, listeners, Spring Boot wiring, Hibernate L2,
+  statistics, and the near-cache topology pattern.
+- `references/pitfalls-deep-dive.md` — each pitfall with reproducer and fix.
 
 ## Upstream sources
 
