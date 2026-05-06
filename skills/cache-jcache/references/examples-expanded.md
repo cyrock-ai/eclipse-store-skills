@@ -141,12 +141,11 @@ Spring tries to use it, or via a JCache XML config referenced from
 hibernate.cache.use_second_level_cache=true
 hibernate.cache.use_query_cache=true
 hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
-# Or use the registered short alias: hibernate.cache.region.factory_class=jcache
+# Short alias also works: hibernate.cache.region.factory_class=jcache
 ```
 
-Eclipse Store's region factory does not delegate through JCache, so do **not**
-also set `hibernate.javax.cache.provider`. (That property only matters if you use
-Hibernate's own `JCacheRegionFactory`, a different strategy.)
+Do **not** also set `hibernate.javax.cache.provider` — that property is for
+Hibernate's own `JCacheRegionFactory` (a different strategy).
 
 Entities:
 

@@ -52,7 +52,7 @@ Static factory methods on `CacheConfiguration` (verified against
 | Factory | Purpose |
 |---|---|
 | `CacheConfiguration.Builder(Class<K>, Class<V>)` | Not storage-backed. The cache name is supplied later in `cacheManager.createCache(name, cfg)`. |
-| `CacheConfiguration.Builder(Class<K>, Class<V>, String cacheName, StorageManager)` | Storage-backed. `StorageManager` is the supertype of `EmbeddedStorageManager`, so an embedded manager fits here. |
+| `CacheConfiguration.Builder(Class<K>, Class<V>, String cacheName, StorageManager)` | Storage-backed. Accepts an `EmbeddedStorageManager` (subtype of `StorageManager`). |
 | `CacheConfiguration.Builder(Class<K>, Class<V>, URI, String cacheName, StorageManager)` | Storage-backed with a custom URI prefix for the slot in the storage root. |
 | `CacheConfiguration.Builder(Configuration)` | Build from an Eclipse `Configuration` instance (e.g. loaded from a properties file). |
 | `CacheConfiguration.Builder(Class<K>, Class<V>, Configuration)` | Typed variant of the above. |
@@ -110,14 +110,10 @@ hibernate.cache.use_second_level_cache=true
 hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
 ```
 
-The strategy registration provider also registers the short aliases `jcache` and
-`CacheRegionFactory`, so `hibernate.cache.region.factory_class=jcache` works too.
+Short aliases `jcache` and `CacheRegionFactory` are also registered.
 
-Eclipse Store's `CacheRegionFactory` extends Hibernate's `RegionFactoryTemplate`
-directly — it does **not** delegate through JCache. Therefore
-`hibernate.javax.cache.provider` is *not* required (and is ignored). It is only
-relevant if you instead use Hibernate's own `JCacheRegionFactory`, which is a
-different strategy.
+Do **not** also set `hibernate.javax.cache.provider` — that property is for
+Hibernate's own `JCacheRegionFactory` (a different strategy).
 
 Per-region expiry uses Hibernate's standard `hibernate.cache.<region>.ttl`.
 

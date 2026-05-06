@@ -114,7 +114,6 @@ Wrong or missing `hibernate.cache.region.factory_class` → L2 doesn't use Eclip
 Store; silently falls back to whatever Hibernate decides.
 
 **Fix.** Set it to
-`org.eclipse.store.cache.hibernate.types.CacheRegionFactory` (or the registered
-short alias `jcache`) and verify with Hibernate's logs. Note: this factory does
-not delegate through JCache, so don't also set `hibernate.javax.cache.provider`
-— that property only matters when using Hibernate's own `JCacheRegionFactory`.
+`org.eclipse.store.cache.hibernate.types.CacheRegionFactory` (or the alias
+`jcache`) and verify with Hibernate's logs. Don't also set
+`hibernate.javax.cache.provider` — that's for Hibernate's `JCacheRegionFactory`.

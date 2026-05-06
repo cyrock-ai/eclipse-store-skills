@@ -234,9 +234,8 @@ To plug in your own evictor, implement `EvictionManager<K, V>` (in
 
 ### Pattern G — Spring `@Cacheable` with Eclipse Store
 
-Spring Boot 3 auto-configures JCache when `spring-boot-starter-cache` is on the
-classpath alongside a JCache provider. **No manual `@Bean` declarations are
-needed** — set the properties and add `@EnableCaching`:
+In Spring Boot 3, set the properties and add `@EnableCaching` — auto-config wires
+both the JCache `CacheManager` and Spring's adapter. No manual `@Bean` declarations.
 
 `pom.xml`:
 
@@ -278,17 +277,9 @@ public class CustomerService {
 }
 ```
 
-Why no manual bean? Spring Boot's auto-config creates both the JCache
-`CacheManager` (`javax.cache.CacheManager`) and the Spring adapter
-(`JCacheCacheManager`, which implements Spring's
-`org.springframework.cache.CacheManager`) for you. A manual `@Bean public
-JCacheManagerFactoryBean` produces only the JCache `CacheManager` — `@Cacheable`
-needs the Spring `CacheManager`, so the manual approach is incomplete and
-generally unnecessary with the starter on the classpath.
-
-For storage-backed caches, programmatically create the cache at startup (Pattern
-B) with the name Spring expects, or point Spring at a JCache XML config via
-`spring.cache.jcache.config`.
+For storage-backed caches, programmatically create the cache at startup
+(Pattern B) with the name Spring expects, or point Spring at a JCache XML
+config via `spring.cache.jcache.config`.
 
 ### Pattern H — Hibernate second-level cache
 
@@ -299,17 +290,10 @@ hibernate.cache.use_second_level_cache=true
 hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
 ```
 
-The strategy registration provider also registers the short aliases `jcache` and
-`CacheRegionFactory`, so this works too:
+Short aliases `jcache` and `CacheRegionFactory` are also registered.
 
-```properties
-hibernate.cache.region.factory_class=jcache
-```
-
-Eclipse Store's region factory extends `RegionFactoryTemplate` directly — it does
-**not** delegate through JCache. The `hibernate.javax.cache.provider` property is
-only needed if you instead use Hibernate's own `JCacheRegionFactory` (a different
-strategy that goes through JCache). Don't set both.
+Do **not** also set `hibernate.javax.cache.provider` — that property is for
+Hibernate's own `JCacheRegionFactory` (a different strategy).
 
 Configure expiry/eviction per region via standard Hibernate region settings
 plus (optionally) an Eclipse-Store-specific properties file.
@@ -413,20 +397,17 @@ TTL + offload via storage backing. Or use GigaMap if you need indexed access.
 
 **"How do I use it in Hibernate?"** → `cache-hibernate` artifact +
 `hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory`
-(or the alias `jcache`). Eclipse Store's factory does not delegate through JCache,
-so don't also set `hibernate.javax.cache.provider`.
+(or the alias `jcache`). Don't also set `hibernate.javax.cache.provider`.
 
 **"How do I use it with Spring `@Cacheable`?"** → `spring-boot-starter-cache` +
-`spring.cache.type=jcache` + `spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider`
-+ `@EnableCaching`. Spring Boot's auto-config wires both the JCache and Spring
-`CacheManager` beans; no manual `JCacheManagerFactoryBean` is needed.
+`spring.cache.type=jcache` +
+`spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider`
++ `@EnableCaching`. No manual `@Bean` needed.
 
-**"What about JCache's `Cache.Entry` vs. `Map.Entry`?"** → Different interfaces;
-JCache's `Cache.Entry<K, V>` exposes only `getKey()` and `getValue()` — no
-`setValue()` like `Map.Entry`. Mutation goes through
-`javax.cache.processor.MutableEntry` (passed to an `EntryProcessor`), which adds
-`exists()`, `setValue(V)`, and `remove()`. Event payloads
-(`javax.cache.event.CacheEntryEvent`) extend `Cache.Entry` and add
+**"What about JCache's `Cache.Entry` vs. `Map.Entry`?"** → Different interfaces.
+`Cache.Entry<K, V>` has only `getKey()` and `getValue()` — no `setValue()`.
+Mutation goes through `MutableEntry` (passed to an `EntryProcessor`), which adds
+`exists()`, `setValue(V)`, `remove()`. Event payloads (`CacheEntryEvent`) add
 `getOldValue()`. Don't assume `Map.Entry` interchangeability.
 
 **"Can I configure from a properties file?"** → JCache supports `config` URIs
