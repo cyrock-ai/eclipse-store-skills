@@ -134,7 +134,6 @@ CacheManager    cacheManager = provider.getCacheManager();
 CacheConfiguration<Integer, String> cfg = CacheConfiguration
     .Builder(Integer.class, String.class, "jCache", storage)
     .expiryPolicyFactory(CreatedExpiryPolicy.factoryOf(Duration.ONE_HOUR))
-    .enableStatistics(true)
     .build();
 
 Cache<Integer, String> cache = cacheManager.createCache("jCache", cfg);
@@ -197,11 +196,7 @@ CacheEntryListenerConfiguration<Integer, String> listenerCfg =
         true,      // oldValueRequired
         true);     // synchronous
 
-// On a JCache MutableConfiguration (Pattern A):
-mutableCfg.addCacheEntryListenerConfiguration(listenerCfg);
-
-// On the Eclipse Store CacheConfiguration.Builder (Pattern B):
-builder.addListenerConfiguration(listenerCfg);
+cfg.addCacheEntryListenerConfiguration(listenerCfg);
 ```
 
 Listeners are synchronous by default — a slow listener blocks cache operations.
