@@ -48,15 +48,13 @@ Extends `javax.cache.configuration.CompleteConfiguration<K,V>`.
 
 | Builder method | Purpose |
 |---|---|
-| `CacheConfiguration.Builder(K.class, V.class, name)` | Not storage-backed. |
-| `CacheConfiguration.Builder(K.class, V.class, name, EmbeddedStorageManager)` | Storage-backed. |
+| `CacheConfiguration.Builder(K.class, V.class)` | Not storage-backed. |
+| `CacheConfiguration.Builder(K.class, V.class, name, StorageManager)` | Storage-backed. |
 | `.expiryPolicyFactory(Factory<ExpiryPolicy>)` | Plug expiry. |
 | `.evictionManagerFactory(...)` | Plug eviction. |
-| `.writeThroughFactory(...)` | Plug write-through. |
-| `.readThroughFactory(...)` | Plug read-through. |
 | `.storeByValue(boolean)` | Serialize on every op. |
-| `.statisticsEnabled(boolean)` | Enable JMX/stats. |
-| `.managementEnabled(boolean)` | Enable JMX. |
+| `.enableStatistics(boolean)` | Enable JMX/stats. |
+| `.enableManagement(boolean)` | Enable JMX. |
 | `.build()` | Returns `CacheConfiguration`. |
 
 ### `CacheManager`
@@ -92,7 +90,7 @@ simpler.
 
 ```properties
 hibernate.cache.use_second_level_cache=true
-hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.EclipseStoreCacheRegionFactory
+hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
 hibernate.javax.cache.provider=org.eclipse.store.cache.types.CachingProvider
 ```
 

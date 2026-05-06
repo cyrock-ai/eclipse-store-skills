@@ -204,7 +204,7 @@ Listeners are synchronous by default — a slow listener blocks cache operations
 ### Pattern F — Eviction (LRU / LFU / TTL)
 
 ```java
-EvictionManagerFactory<Integer, String> eviction =
+Factory<EvictionManager<Integer, String>> eviction =
     // Eclipse Store-specific: your own evictor, or built-in LRU
     ...;
 
@@ -222,12 +222,7 @@ artifact, `@EnableCaching` picks up Eclipse Store.
 ```java
 @Configuration
 @EnableCaching
-public class CacheConfig {
-    @Bean
-    public JCacheManagerFactoryBean jCacheManager() {
-        return new JCacheManagerFactoryBean();   // Spring discovery
-    }
-}
+public class CacheConfig {}
 
 @Service
 public class CustomerService {
@@ -246,7 +241,7 @@ Add `cache-hibernate` and set Hibernate properties:
 
 ```properties
 hibernate.cache.use_second_level_cache=true
-hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.EclipseStoreCacheRegionFactory
+hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
 hibernate.javax.cache.provider=org.eclipse.store.cache.types.CachingProvider
 ```
 
@@ -353,9 +348,8 @@ factory property + standard JCache provider property.
 **"How do I use it with Spring `@Cacheable`?"** → `@EnableCaching` + ensure
 Eclipse Store is the discovered provider. Spring handles the rest.
 
-**"What about JCache's `Cache.Entry` vs. `Map.Entry`?"** → Different interfaces;
-JCache's `Entry` has extra getters (`getExistingValue`, etc.). Don't assume
-`Map.Entry` interchangeability.
+**"What about JCache's `Cache.Entry` vs. `Map.Entry`?"** → Different interfaces.
+Don't assume `Map.Entry` interchangeability.
 
 **"Can I configure from a properties file?"** → JCache supports `config` URIs
 that point to XML — provider-specific. Eclipse Store honors
@@ -365,9 +359,6 @@ that point to XML — provider-specific. Eclipse Store honors
 ## Deeper lookups (on-demand)
 
 - `references/api-catalogue.md` — full Eclipse Store + JCache API tables.
-- `references/hibernate-l2.md` — complete Hibernate setup.
-- `references/spring-cacheable.md` — Spring config end-to-end.
-- `references/near-cache-topologies.md` — local + remote cache patterns.
 - `references/examples-expanded.md` — five end-to-end examples.
 - `references/pitfalls-deep-dive.md` — each pitfall with reproducer.
 

@@ -45,7 +45,7 @@ CacheConfiguration<String, Customer> cfg = CacheConfiguration
     .expiryPolicyFactory(CreatedExpiryPolicy.factoryOf(
         new Duration(TimeUnit.HOURS, 1)))
     .storeByValue(false)
-    .statisticsEnabled(true)
+    .enableStatistics(true)
     .build();
 
 Cache<String, Customer> cache = cm.createCache("customers", cfg);
@@ -140,7 +140,7 @@ Spring tries to use it, or via a JCache XML config referenced from
 ```properties
 hibernate.cache.use_second_level_cache=true
 hibernate.cache.use_query_cache=true
-hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.EclipseStoreCacheRegionFactory
+hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
 hibernate.javax.cache.provider=org.eclipse.store.cache.types.CachingProvider
 ```
 
@@ -176,7 +176,7 @@ System.out.println("misses: "  + stats.getCacheMisses());
 System.out.println("rate: "    + stats.getCacheHitPercentage() + "%");
 ```
 
-Requires `.statisticsEnabled(true)` on the config.
+Requires `.enableStatistics(true)` on the config.
 
 ## Example 7 — Near-cache topology
 
