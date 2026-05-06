@@ -37,7 +37,7 @@ options, and how to drop the generated files into a consuming project.
 From a Claude Code session:
 
 ```
-/plugin marketplace add cyrock-ai/eclipse-store-claude
+/plugin marketplace add cyrock-ai/eclipse-store-skills
 /plugin install eclipse-store-claude@eclipse-store-claude
 /reload-plugins
 ```
