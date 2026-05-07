@@ -26,7 +26,7 @@ description: >
   "gigaMap.store vs storageManager.store", "iterators leaking read locks",
   "stress-test concurrent writes", or asks why a multi-threaded app is
   producing inconsistent state on disk.
-version: 0.1.0
+version: 0.2.0
 ---
 
 # Eclipse Store — Concurrent Access and Locking
@@ -140,7 +140,7 @@ serializes.
 | Storage channels | yes | Internal I/O threads that parallelize file reads/writes. **Not** an application-level concurrency primitive — they do not synchronize access from your application threads. |
 | `EmbeddedStorageManager.store(...)` | atomic for **durability** only | Each `store()` is an all-or-nothing write on disk. This is *durability* atomicity, not RAM isolation. The in-memory graph the store traverses is **not** protected from concurrent mutation. |
 | `GigaMap` operations (`add`, `remove`, `update`, `get`, `apply`) | yes | Each acquires the GigaMap's internal read-write lock. Iterators must be closed (try-with-resources) so the read lock is released. |
-| `gigaMap.store()` vs `storageManager.store(gigaMap)` | only `gigaMap.store()` | The former acquires the GigaMap's internal lock during the store; the latter does not. **Always prefer `gigaMap.store()`.** |
+| `gigaMap.store()` vs `storageManager.store(gigaMap)` | only `gigaMap.store()` | The former is a `synchronized` method (intrinsic monitor on the GigaMap instance) that holds the lock for the duration of the store; the latter bypasses it. **Always prefer `gigaMap.store()`.** |
 | `Lazy<T>.get()` | yes | Concurrent calls are safe. The background clearing thread uses `WeakReference` and cannot reclaim a reference still held by application code. |
 | `Cache<K, V>` (cache module) | yes | JCache contract; thread-safe by JSR-107 spec. |
 | `Serializer` instances | **no** | Confine to a single thread. The `SerializerFoundation` is safe to share. |
@@ -212,9 +212,12 @@ This is what most Eclipse Store apps end up using. Verbose but transparent.
 For more concise code without the manual try/finally, Eclipse Store provides
 two helpers wrapping a `ReentrantReadWriteLock`:
 
-- **`LockedExecutor`** — a wrapper exposing `read(Supplier)` / `write(Runnable)`.
-- **`LockScope`** — a base class with the same methods inherited into your
-  domain class.
+- **`LockedExecutor`** — an interface exposing `read(Producer<R>)` /
+  `read(Action)` / `write(Producer<R>)` / `write(Action)`. `Producer<R>` and
+  `Action` live in `org.eclipse.serializer.functional` — the latter is just
+  `Runnable`-shaped without the checked-exception ergonomics.
+- **`LockScope`** — an abstract base class exposing the same methods as
+  `protected` so your domain class inherits them inline.
 
 ```java
 LockedExecutor exec = LockedExecutor.New();
