@@ -192,8 +192,8 @@ import java.util.Hashtable;
 import java.util.Map;
 
 import org.eclipse.serializer.persistence.types.PersistenceObjectRegistrationListener;
+import org.eclipse.serializer.persistence.types.Storer;
 import org.eclipse.store.storage.embedded.types.EmbeddedStorageManager;
-import org.eclipse.store.storage.types.BinaryStorer;
 
 public class AuditingStore {
 
@@ -201,7 +201,7 @@ public class AuditingStore {
             EmbeddedStorageManager storage, Object... objects) {
 
         Hashtable<Long, Object> persisted = new Hashtable<>();
-        BinaryStorer s = (BinaryStorer) storage.createStorer();
+        Storer s = storage.createStorer();
         s.registerRegistrationListener((id, obj) -> persisted.put(id, obj));
 
         for (Object o : objects) s.store(o);
@@ -254,7 +254,7 @@ tx.write(() -> {
 Both the mutation and the store are guaranteed to happen under the same write lock,
 with no reader seeing an intermediate state.
 
-## Example 6 — Lazy walk vs eager walk, visualised
+## Example 7 — Lazy walk vs eager walk, visualised
 
 The same scenario stored with a lazy storer and an eager storer side by side.
 The graph: `root.customers()` is the explicit argument; Customer A and her
