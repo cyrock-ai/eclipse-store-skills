@@ -72,6 +72,7 @@ All entry points live in `org.eclipse.store.storage.embedded.types` from the
 | `EmbeddedStorage.Foundation(...)` | Returns `EmbeddedStorageFoundation<?>` for full customization (custom type handlers, connection foundation, etc.). Call `.start(root)` on the foundation. |
 | `EmbeddedStorageManager.root()` | Returns the root instance (always non-null after the first store). |
 | `EmbeddedStorageManager.setRoot(Object)` | Replace the root instance. |
+| `EmbeddedStorageManager.ensureRoot(Supplier)` | If `root()` is null, invokes the supplier and persists the result; if already loaded, returns the loaded root unchanged. |
 | `EmbeddedStorageManager.storeRoot()` | Store the current root. |
 | `EmbeddedStorageManager.store(Object)` | Store any other object in the graph. |
 | `EmbeddedStorageManager.shutdown()` | Stop managing threads; release file locks. |
@@ -308,6 +309,13 @@ your own root object. If it came back with its `new`-constructed defaults, the d
 was empty. If it came back with persisted values, it had data. There is no "is-empty"
 method — that is by design; your root is the source of truth.
 
+**"How do I write 'fresh DB → seed it; existing DB → reuse the loaded root'?"** →
+`storage.ensureRoot(DataRoot::new)`. Start the manager without a root
+(`EmbeddedStorage.start(dir)`), then call `ensureRoot` with a supplier — the supplier
+is invoked only on the fresh-DB branch, and `setRoot + storeRoot` happen automatically.
+This is the explicit form of the implicit "pass an instance to `start(root, dir)` and
+let it populate fields in place" pattern.
+
 **"How do I shut down cleanly in a test?"** → Use try-with-resources (Pattern C).
 
 **"How do I run two databases?"** → Two managers, two distinct directories. See
@@ -316,7 +324,7 @@ Pattern D.
 **"Can I `.start()` the same manager twice?"** → No. `EmbeddedStorage.start(...)`
 returns an already-started manager. Don't call any re-start method on it.
 
-**"Where is the lock file?"** → `<storage-dir>/lock.sfl`. Eclipse Store deletes it on
+**"Where is the lock file?"** → `<storage-dir>/used.lock`. Eclipse Store deletes it on
 clean shutdown. If a previous run crashed, the next `.start()` recovers cleanly — you do
 not need to delete it by hand. Deleting it while a manager is live breaks things.
 
