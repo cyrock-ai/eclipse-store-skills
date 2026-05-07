@@ -9,7 +9,6 @@
 | Factory | Purpose |
 |---|---|
 | `Lazy.Reference(T value)` | Wraps `value` (may be null). |
-| `Lazy.New(T value)` | Alias of `Reference`. |
 
 ### Instance methods
 
@@ -17,10 +16,9 @@
 |---|---|
 | `T get()` | Returns the value, loading if necessary. NPE if `this == null`. |
 | `T peek()` | Returns the current hard reference without loading. May be null. |
-| `void clear()` | Releases the hard reference; keeps the object id. |
+| `T clear()` | Releases the hard reference; keeps the object id. Returns the previous hard reference (or null if not loaded). |
 | `boolean isLoaded()` | Whether a hard reference is currently held. |
 | `boolean isStored()` | Whether the value has ever been persisted. |
-| `long objectId()` | Storage id of the referenced entity; 0 if never stored. |
 | `long lastTouched()` | Timestamp (epoch ms) of the last `.get()`. |
 
 ### Static null-safe accessor
@@ -45,18 +43,17 @@ File: `persistence/binary/…` — precise path: `base/src/main/java/org/eclipse
 | Method | Notes |
 |---|---|
 | `static LazyReferenceManager New(Checker c)` | Build a new manager using the given checker. |
-| `static LazyReferenceManager New(Checker c, Duration cycleTime)` | With custom cycle time. |
-| `static void set(LazyReferenceManager)` | Install as the global manager. Must happen **before** any storage starts. |
+| `static LazyReferenceManager New(Checker c, long milliCheckInterval, long nanoTimeBudget)` | With custom interval / budget. |
+| `static LazyReferenceManager set(LazyReferenceManager)` | Install as the global manager. Must happen **before** any storage starts. |
 | `static LazyReferenceManager get()` | Current global manager. |
-| `void checkAll()` | Run a single check pass now. |
-| `void start()` / `stop()` | Control the background daemon. |
-| `void addLazy(Lazy<?>)` | Register a Lazy reference (normally done automatically). |
+| `LazyReferenceManager start()` / `stop()` | Control the background daemon. Returns `this` for chaining. |
+| `void register(Lazy<?>)` | Register a Lazy reference (normally done automatically). |
 
 The default manager uses `Lazy.Checker(1_000_000L)` — 1 M ms ≈ 16.6 min.
 
 ## Lazy collections
 
-Package: `org.eclipse.serializer.collections.lazy` / implementations under storage module.
+Package: `org.eclipse.serializer.collections.lazy` (in `serializer/base`).
 
 | Class | Extends | Default segment size |
 |---|---|---|
