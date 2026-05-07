@@ -22,9 +22,13 @@ public class CustomerService {
 
 **Fix.** Call `storage.store(root.customers())` yourself.
 
-## 2. Missing public no-arg constructor on root class
+## 2. Missing accessible no-arg constructor — only on the property-driven path
 
 **Reproducer.**
+
+```properties
+org.eclipse.store.root=com.example.AppRoot
+```
 
 ```java
 public class AppRoot {
@@ -32,9 +36,22 @@ public class AppRoot {
 }
 ```
 
-**Symptom.** Spring startup fails: no suitable constructor.
+**Symptom.** Startup fails wrapped as
+`RuntimeException: Failed to instantiate storage root: class com.example.AppRoot`.
 
-**Fix.** Add `public AppRoot() {}`.
+**Root cause.** `EmbeddedStorageFoundationFactory.createNewRootInstance` runs
+`rootClass.getDeclaredConstructor().newInstance()` whenever the property is
+set. No accessible no-arg constructor → reflection fails.
+
+**Fix.** Two options:
+
+- Add `public AppRoot() {}` to the root class.
+- Drop the `org.eclipse.store.root` property and build the manager yourself
+  (Pattern D in SKILL.md). With manual wiring you instantiate the root with
+  any constructor and call `foundation.setRoot(...)` directly.
+
+Eclipse Store itself never needs the no-arg constructor — it instantiates via
+low-level memory allocation, not reflection.
 
 ## 3. Missing `spring-boot-starter-aop`
 
@@ -47,9 +64,18 @@ public class AppRoot {
 …without `spring-boot-starter-aop`.
 
 **Symptom.** No compile error. No locking at runtime. Concurrent access
-corrupts data.
+corrupts data. Nothing in the startup log warns about it (`LockAspect` has no
+warn log on missing AOP).
 
-**Fix.** Add:
+**Root cause.** The starter pulls `aspectjweaver` as a compile dep, so the
+`AspectJCondition` on `LockAspect` is satisfied and the bean *is* registered.
+What's still missing is `spring-aop` (transitively from
+`spring-boot-starter-aop`), which Spring Boot's `AopAutoConfiguration` needs
+(`@ConditionalOnClass(org.aopalliance.aop.Advice.class)`) to enable
+`@EnableAspectJAutoProxy`. Without it, `@Aspect` beans never proxy your
+methods.
+
+**Fix.** Add the starter:
 
 ```xml
 <dependency>
@@ -57,6 +83,24 @@ corrupts data.
   <artifactId>spring-boot-starter-aop</artifactId>
 </dependency>
 ```
+
+**Verify it works.** `LockAspect` emits TRACE-level events for every call. Turn
+the level up:
+
+```properties
+logging.level.org.eclipse.store.integrations.spring.boot.types.concurrent.LockAspect=TRACE
+```
+
+Call any `@Read`/`@Write` method and watch for entries like:
+
+```
+TRACE ... LockAspect : Found method lock annotation for lock: orders
+TRACE ... LockAspect : write lock
+TRACE ... LockAspect : write unlock
+```
+
+If these never appear, the aspect isn't being applied — re-check the AOP
+dependency.
 
 ## 4. `@Write` on a method that also does `@Transactional`
 
@@ -70,11 +114,11 @@ alone. Behaviour depends on Spring's aspect ordering.
 Might work because the starter sometimes auto-publishes the root bean under its
 class name. Might not, if the starter changes or you have multiple roots.
 
-**Fix.** Inject `EmbeddedStorageManager` and cast `.root()`:
+**Fix.** Inject `EmbeddedStorageManager` and read `s.root()`:
 
 ```java
 public CustomerService(EmbeddedStorageManager s) {
-    this.root = (AppRoot) s.root();
+    this.root = s.root();
 }
 ```
 
@@ -147,46 +191,15 @@ define each manager with distinct directories.
 **Fix.** Don't nest read→write. Split into two public methods, one of each
 kind, called from the outside.
 
-## 11. GigaMap inside the Spring Boot app — wrong store path
+## 11. REST console exposed publicly
 
-```java
-@Write
-public void add(Person p) {
-    root.people().add(p);
-    storage.store(root.people());   // WRONG — no lock on the map
-}
-```
-
-**Fix.**
-
-```java
-@Write
-public void add(Person p) {
-    root.people().add(p);
-    root.people().store();   // GigaMap's own store()
-}
-```
-
-## 12. REST console exposed publicly
-
-```properties
-org.eclipse.store.rest.enabled=true
-```
-
-…without securing the endpoint in Spring Security.
+Adding the `integrations-spring-boot3-console` artifact auto-enables the Vaadin UI
+(`org.eclipse.store.console.ui.enabled=true` by default) without securing the
+endpoint in Spring Security.
 
 **Symptom.** Anyone on the internet can browse your data.
 
-**Fix.** `HttpSecurity` config to require auth on the console path, or behind
-an internal-only network.
+**Fix.** Either set `org.eclipse.store.console.ui.enabled=false` outside dev, or
+configure `HttpSecurity` to require auth on the console path / restrict it to an
+internal-only network.
 
-## 13. Relaxed binding camelCase vs. kebab-case
-
-Mixing styles within one properties file:
-
-```properties
-org.eclipse.store.storage-directory=data
-org.eclipse.store.channelCount=2      # works, but inconsistent
-```
-
-Harmless but hard to audit. Pick one per file.

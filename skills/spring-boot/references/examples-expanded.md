@@ -55,7 +55,7 @@ public class MessageService {
 
     public MessageService(EmbeddedStorageManager storage) {
         this.storage = storage;
-        this.root    = (AppRoot) storage.root();
+        this.root    = storage.root();
     }
 
     @Write
@@ -99,7 +99,7 @@ public class CustomerService {
 
     public CustomerService(EmbeddedStorageManager s) {
         this.storage = s;
-        this.root    = (AppRoot) s.root();
+        this.root    = s.root();
     }
 
     @Write
@@ -156,26 +156,7 @@ org.eclipse.store.housekeeping-adaptive=true
 Ensure the AWS S3 AFS artifact is on the classpath (`afs-aws-s3` +
 `software.amazon.awssdk:s3`).
 
-## Example 4 — Custom type handler registration
-
-```java
-@Configuration
-public class StorageConfig {
-
-    @Bean
-    public StorageContextInitializer storageInit() {
-        return foundation -> foundation.onConnectionFoundation(cf -> {
-            cf.registerCustomTypeHandler(new MoneyHandler());
-            cf.registerCustomTypeHandler(new ZoneIdHandler());
-        });
-    }
-}
-```
-
-No other change needed — the starter picks up the `StorageContextInitializer`
-bean.
-
-## Example 5 — Test with a temp directory
+## Example 4 — Test with a temp directory
 
 ```java
 @SpringBootTest
@@ -201,7 +182,7 @@ class MessageServiceTest {
 Each test class gets a fresh temp directory; when Spring shuts down, the
 manager closes automatically.
 
-## Example 6 — GigaMap in a Spring Boot app
+## Example 5 — GigaMap in a Spring Boot app
 
 ```java
 public class AppRoot {
@@ -221,7 +202,7 @@ public class AppRoot {
 @Mutex("people")
 public class PeopleService {
     private final AppRoot root;
-    public PeopleService(EmbeddedStorageManager s) { this.root = (AppRoot) s.root(); }
+    public PeopleService(EmbeddedStorageManager s) { this.root = s.root(); }
 
     @Write
     public void add(Person p) {
@@ -239,10 +220,22 @@ public class PeopleService {
 Note: the service uses `gigaMap.store()` internally — this is the correct path
 even inside a Spring `@Write` method.
 
-## Example 7 — Enable REST console
+## Example 6 — Enable REST console
+
+Add the artifact:
+
+```xml
+<dependency>
+  <groupId>org.eclipse.store</groupId>
+  <artifactId>integrations-spring-boot3-console</artifactId>
+  <version>${eclipse-store.version}</version>
+</dependency>
+```
+
+The Vaadin UI is on by default once the artifact is on the classpath
+(`org.eclipse.store.console.ui.enabled=true`). Configure the mount path:
 
 ```properties
-org.eclipse.store.rest.enabled=true
 vaadin.url-mapping=/store-console/*
 ```
 

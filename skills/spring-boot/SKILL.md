@@ -11,7 +11,7 @@ description: >
   for Eclipse Store", "@Read", "@Write", "@Mutex", "LockAspect", "Spring REST
   console for Eclipse Store", or needs help wiring cloud storage credentials
   through Spring config.
-version: 0.1.0
+version: 0.1.1
 ---
 
 # Eclipse Store — Spring Boot 3 Integration
@@ -50,14 +50,15 @@ The starter registers:
   properties and builds a foundation.
 - A singleton `EmbeddedStorageManager` bean (if
   `org.eclipse.store.auto-create-default-storage=true`, the default).
-- The root bean, instantiated from the class named in `org.eclipse.store.root`
-  via its public no-arg constructor.
+- The root instance — **only when `org.eclipse.store.root` is set**; the factory
+  reflects the no-arg ctor. Otherwise provide the root via Pattern D.
 - A `LockAspect` that wraps `@Read` / `@Write` / `@Mutex`-annotated methods in
   a `ReentrantReadWriteLock`.
 
 Boot sequence:
 
-1. Spring instantiates your root class (needs public no-arg constructor).
+1. Starter reflects root's no-arg ctor (only when `org.eclipse.store.root` is set;
+   otherwise root comes from your bean).
 2. Eclipse Store populates its fields from disk.
 3. `EmbeddedStorageManager` bean is ready; others can `@Autowired` it.
 
@@ -79,8 +80,7 @@ Spring `@Transactional` does **nothing** for Eclipse Store. You still call
   <artifactId>spring-boot-starter-aop</artifactId>
 </dependency>
 
-<!-- Optional: REST console (read-only browser) -->
-<!-- Vaadin + REST adapter -->
+<!-- Optional: REST console (read-only browser) — see Pattern F -->
 ```
 
 ## Core properties
@@ -89,9 +89,11 @@ All under prefix `org.eclipse.store`:
 
 | Property | Default | Purpose |
 |---|---|---|
-| `root` | — | FQCN of the root class. Required for auto-create. |
+| `root` | — | FQCN of the root class. Required for auto-create. Bound to a `Class<?>` field. |
 | `auto-start` | `true` | Start the storage manager at app startup. |
+| `auto-create-default-foundation` | `true` | Create the default `EmbeddedStorageFoundationSupplier` bean. |
 | `auto-create-default-storage` | `true` | Create an `EmbeddedStorageManager` bean. |
+| `register-jdk8-handlers` | `false` | Register the optional JDK 8 binary handlers. |
 | `storage-directory` | `storage` | Where the data lives. |
 | `deletion-directory` | unset | Move deleted files here. |
 | `truncation-directory` | unset | Move truncated files here. |
@@ -99,7 +101,7 @@ All under prefix `org.eclipse.store`:
 | `channel-count` | `1` | Parallel channels (power of 2). |
 | `housekeeping-*` | defaults | Same as the storage config properties. |
 | `data-file-*` | defaults | Same as the storage config properties. |
-| `rest.enabled` | `false` | Enable the REST browser console. |
+| `console.ui.enabled` | `true` (when console artifact is present) | Vaadin REST console. Adding `integrations-spring-boot3-console` auto-enables it. |
 
 Cloud storage properties live under
 `org.eclipse.store.storage-filesystem.*` and
@@ -163,7 +165,7 @@ import java.util.List;
 import java.util.Map;
 
 public class AppRoot {
-    public AppRoot() {}    // public no-arg constructor required by Spring
+    public AppRoot() {}    // starter reflects this ctor (org.eclipse.store.root path)
 
     private final Map<String, Customer> customersById = new HashMap<>();
     private final List<Order>           orders        = new ArrayList<>();
@@ -183,7 +185,7 @@ public class CustomerService {
 
     public CustomerService(EmbeddedStorageManager storage) {
         this.storage = storage;
-        this.root    = (AppRoot) storage.root();
+        this.root    = storage.root();
     }
 
     @Write
@@ -244,25 +246,48 @@ org.eclipse.store.storage-directory=my-bucket/prod-data
 Spring Boot's relaxed binding handles camelCase too. Profiles allow
 per-environment overrides; dev uses local, prod uses S3.
 
-### Pattern D — Custom foundation (advanced)
+### Pattern D — Custom foundation configuration
 
-If you need to register custom type handlers, plug into the foundation:
+When properties aren't enough, define the `EmbeddedStorageManager` bean yourself.
+The default manager is `@ConditionalOnMissingBean`, so it steps aside; the default
+foundation supplier still exists but goes unused. You inject the same
+property-driven factory the starter uses, build the foundation, configure it,
+and hand the manager back:
 
 ```java
 @Configuration
 public class StorageConfig {
 
+    private final EclipseStoreProperties           props;
+    private final EmbeddedStorageFoundationFactory foundationFactory;
+    private final EmbeddedStorageManagerFactory    managerFactory;
+
+    public StorageConfig(
+        EclipseStoreProperties           props,
+        EmbeddedStorageFoundationFactory foundationFactory,
+        EmbeddedStorageManagerFactory    managerFactory
+    ) {
+        this.props             = props;
+        this.foundationFactory = foundationFactory;
+        this.managerFactory    = managerFactory;
+    }
+
     @Bean
-    public StorageContextInitializer storageContextInitializer() {
-        return foundation -> foundation.onConnectionFoundation(cf -> {
-            cf.registerCustomTypeHandler(new MoneyHandler());
-            cf.registerCustomTypeHandler(new ZoneIdHandler());
+    public EmbeddedStorageManager storage() {
+        EmbeddedStorageFoundation<?> foundation =
+            foundationFactory.createStorageFoundation(props);
+        foundation.onConnectionFoundation(cf -> {
+            // Apply connection-foundation customizations here.
         });
+        return managerFactory.createStorage(foundation, props.isAutoStart());
     }
 }
 ```
 
-`StorageContextInitializer` is called before the manager starts.
+`StorageContextInitializer` is a no-arg hook (`void initialize()`) that fires
+*before* the foundation is built — it receives no `EmbeddedStorageFoundation`
+reference. Use it only for global side-effects (e.g. installing a custom
+`LazyReferenceManager`) that don't need the foundation.
 
 ### Pattern E — Disable auto-start (manual control)
 
@@ -275,20 +300,85 @@ bean needs DB lookups before Eclipse Store is started.
 
 ### Pattern F — REST console (read-only browser)
 
-```properties
-org.eclipse.store.rest.enabled=true
+Add the artifact:
+
+```xml
+<dependency>
+  <groupId>org.eclipse.store</groupId>
+  <artifactId>integrations-spring-boot3-console</artifactId>
+  <version>${eclipse-store.version}</version>
+</dependency>
 ```
 
-Adds a `/store-console` HTTP endpoint for browsing the object graph. Useful for
-ops debugging.
+The console auto-activates (`org.eclipse.store.console.ui.enabled=true` by default).
+To disable explicitly:
 
-**In production:** off by default. If you need it for operations, place it
-behind authentication (Spring Security or equivalent) and restrict it to an
-internal network. The protocol is read-only, but the data exposed is your
-application's data — the same access controls that govern the application as
-a whole must govern this endpoint. The bundled Client GUI is a development
-tool and should not be exposed publicly. See `configuration` →
-`references/dev-test-staging-prod.md` for the per-environment matrix.
+```properties
+org.eclipse.store.console.ui.enabled=false
+```
+
+Adds a Vaadin UI for browsing the object graph. Useful for ops debugging.
+
+**In production:** disable or place behind auth and an internal network. The
+protocol is read-only but the data is your application's data — see
+pitfall #11.
+
+### Pattern G — Multiple storages (`@Qualifier`)
+
+When the app needs more than one independent database, qualifiers stop being
+optional. Disable the defaults, bind one `EclipseStoreProperties` per prefix,
+and produce a named manager for each.
+
+```properties
+org.eclipse.store.auto-create-default-foundation=false
+org.eclipse.store.auto-create-default-storage=false
+
+org.eclipse.store.orders.root=com.example.OrdersRoot
+org.eclipse.store.orders.storage-directory=data/orders
+
+org.eclipse.store.inventory.root=com.example.InventoryRoot
+org.eclipse.store.inventory.storage-directory=data/inventory
+```
+
+```java
+@Configuration
+public class StorageConfig {
+    private final EmbeddedStorageFoundationFactory foundationFactory;
+    private final EmbeddedStorageManagerFactory    managerFactory;
+
+    public StorageConfig(
+        EmbeddedStorageFoundationFactory foundationFactory,
+        EmbeddedStorageManagerFactory    managerFactory
+    ) {
+        this.foundationFactory = foundationFactory;
+        this.managerFactory    = managerFactory;
+    }
+
+    @Bean("orders")    @ConfigurationProperties("org.eclipse.store.orders")
+    EclipseStoreProperties ordersProperties()    { return new EclipseStoreProperties(); }
+
+    @Bean("inventory") @ConfigurationProperties("org.eclipse.store.inventory")
+    EclipseStoreProperties inventoryProperties() { return new EclipseStoreProperties(); }
+
+    @Bean @Qualifier("orders")
+    EmbeddedStorageManager ordersStore(@Qualifier("orders") EclipseStoreProperties p) {
+        return managerFactory.createStorage(
+            foundationFactory.createStorageFoundation(p), p.isAutoStart());
+    }
+
+    @Bean @Qualifier("inventory")
+    EmbeddedStorageManager inventoryStore(@Qualifier("inventory") EclipseStoreProperties p) {
+        return managerFactory.createStorage(
+            foundationFactory.createStorageFoundation(p), p.isAutoStart());
+    }
+}
+```
+
+Consumers inject by qualifier (`@Qualifier("orders") EmbeddedStorageManager s`).
+Cross-storage operations are not atomic — design the domain so each write flows
+into a single database. Full walkthrough in
+`references/advanced-foundation-override.md` Pattern 4 (mirrors the upstream
+`spring-boot3-advanced` example).
 
 ## Anti-patterns (do NOT do this)
 
@@ -308,7 +398,7 @@ public class CustomerService {
 
 **Fix.** Call `storage.store(root.customers())` explicitly.
 
-### Anti-pattern 2 — No `@Write` on mutating methods
+### Anti-pattern 2 — Mutation + `store()` outside any lock
 
 ```java
 // WRONG
@@ -321,22 +411,27 @@ public class CustomerService {
 }
 ```
 
-Concurrent adds race. Without `@Write` (or a manual lock), you get corruption.
+Concurrent adds race; the in-memory mutation and the `store()` can interleave
+across threads.
 
-**Fix.** `@Write` on every mutating public service method.
+**Fix.** Wrap mutation and store together under one lock. Pick a mechanism and
+apply it consistently — `@Write` (with `spring-boot-starter-aop`), a manual
+`ReentrantReadWriteLock`, `synchronized`, or `XThreads.executeSynchronized`.
+See `concurrency-and-locking` for the full strategy ladder.
 
-### Anti-pattern 3 — Root class with no public no-arg constructor
+### Anti-pattern 3 — Property-driven root with no accessible no-arg constructor
 
 ```java
-// WRONG
+// with org.eclipse.store.root=com.example.AppRoot
 public class AppRoot {
-    private final String tenant;
-    public AppRoot(String tenant) { this.tenant = tenant; }   // Spring fails
+    public AppRoot(String tenant) { ... }   // breaks reflective instantiation
 }
 ```
 
-**Fix.** Add a public no-arg constructor. Eclipse Store doesn't need it, but
-Spring does.
+The starter calls `rootClass.getDeclaredConstructor().newInstance()`. **Fix.**
+Add `public AppRoot() {}`, or drop the property and build the manager yourself
+(Pattern D — `foundation.setRoot(new AppRoot(tenantId))`). See
+pitfalls-deep-dive #2.
 
 ### Anti-pattern 4 — Multiple `EmbeddedStorageManager` beans pointing at the same directory
 
@@ -387,30 +482,31 @@ need a manual `Storer` to persist both atomically).
 
 ## Pitfalls & gotchas
 
-1. **Spring needs a public no-arg constructor on the root class.** Eclipse
-   Store doesn't, but the starter uses Spring reflection.
+1. **No-arg constructor required only on the `org.eclipse.store.root` path.**
+   Eclipse Store itself never needs it; with Pattern D (manual manager) any
+   constructor works.
 2. **AOP requires `spring-boot-starter-aop`.** Without it, `@Read/@Write/@Mutex`
    are silently ignored — no warning.
 3. **`@Transactional` is for databases.** Eclipse Store isn't a JDBC data
    source; it ignores transaction manager boundaries.
 4. **Don't mix Eclipse Store with Spring Data JPA expectations.** It's not a
    repository-based ORM; no `findAll`, no `save` semantics.
-5. **Relaxed property binding works but be consistent.** Pick either kebab-case
-   (`storage-directory`) or camelCase (`storageDirectory`); don't mix within
-   one profile file.
-6. **REST console: protocol is read-only, data is not.** Writes via the
+5. **REST console: protocol is read-only, data is not.** Writes via the
    console are not supported, but the data exposed is your application's data.
    The same access controls (auth, network isolation) that govern the
    application must govern this endpoint. Off by default in production; only
    enable behind authentication and an internal network.
-7. **Cloud SDK version compatibility.** Spring Boot may pull in an older S3 SDK;
-   the `afs-aws-s3` artifact doesn't pin one. Verify compatibility; override
-   in your parent pom if needed.
-8. **`StorageContextInitializer` runs once, early.** If you need request-scope
+6. **`StorageContextInitializer` runs once, early.** If you need request-scope
    customization, you're on the wrong path — rethink the design.
-9. **Auto-created storage uses `EmbeddedStorageFoundationFactory`.** Replacing
-   it with your own `@Primary` bean lets you fully customize, but you lose the
-   cloud property wiring the factory provides.
+7. **Auto-created storage stack: `EmbeddedStorageFoundationSupplier` →
+   `EmbeddedStorageManager`**, both `@ConditionalOnMissingBean`. To customize the
+   foundation, define your own `EmbeddedStorageManager` bean (Pattern D) — that
+   alone steps the default manager aside and you keep the cloud property wiring.
+   Replace the supplier instead only if you specifically need its lazy contract;
+   replace the factory only when you must skip property-driven configuration
+   entirely.
+8. **`StorageContextInitializer.initialize()` has no foundation argument.**
+   Don't use it for foundation tweaks — use the manager-bean pattern (D).
 
 ## Interactions with other skills
 
@@ -427,7 +523,8 @@ need a manual `Storer` to persist both atomically).
   the bare property names. Per-environment recommendations (Dev / Test /
   Staging / Prod for backups, channel count, JMX, REST) are documented
   there.
-- **`custom-type-handlers`** — register via `StorageContextInitializer`.
+- **`custom-type-handlers`** — define and register handlers there; in Spring,
+  hook them in via the `EmbeddedStorageFoundationSupplier` override (Pattern D).
 - **`storage-targets-afs`** — cloud credentials flow through Spring properties,
   routed into the AFS layer automatically.
 - **`cache-jcache`** — orthogonal; a Spring app can use both Eclipse Store (data
@@ -437,11 +534,16 @@ need a manual `Storer` to persist both atomically).
 
 **"Minimal Spring Boot app with Eclipse Store?"** → Pattern A.
 
-**"How do I get the typed root?"** → Cast once in the service's
-constructor: `this.root = (AppRoot) storage.root()`. Hold it in a field.
+**"How do I get the typed root?"** → `this.root = storage.root();` in the
+service constructor. Hold it in a typed field.
 
-**"Do I really need `@Write`?"** → Yes for any mutating service method, unless
-you have manual locks.
+**"Do I really need `@Write`?"** → No, the AOP aspect is opt-in (it requires
+`spring-boot-starter-aop` on the classpath). What is mandatory is that the
+mutation and the matching `store()` run under the same lock. `@Read` / `@Write`
+are one declarative way; `synchronized`, a manual `ReentrantReadWriteLock`, or
+`XThreads.executeSynchronized` work just as well. Pick one mechanism per
+codebase and apply it consistently — see `concurrency-and-locking` for the full
+strategy ladder.
 
 **"How do I test without writing to disk?"** → Use a `@TestConfiguration` with
 a temp-dir property:
@@ -461,10 +563,10 @@ static class TestConfig {
 `application-prod.properties` with different `storage-directory` /
 `storage-filesystem.*` entries. Standard Spring profiles.
 
-**"Can I have two Eclipse Store databases?"** → Yes, but you'll need to define
-a second `EmbeddedStorageFoundationFactory` (or build the second manager
-manually) and qualify the beans. Not supported as a first-class feature; plan
-carefully.
+**"Can I have two Eclipse Store databases?"** → Yes — see Pattern G. The
+`EmbeddedStorageFoundationFactory` is shared; you bind one `EclipseStoreProperties`
+per prefix and produce a qualified `EmbeddedStorageManager` for each. The
+upstream `spring-boot3-advanced` example demonstrates the same shape.
 
 **"What if my root class has dependencies (e.g., services)?"** → It shouldn't.
 The root is pure data. Inject services into your service layer; the root

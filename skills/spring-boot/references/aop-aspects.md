@@ -54,7 +54,7 @@ public class CustomerService {
 
     public CustomerService(EmbeddedStorageManager s) {
         this.storage = s;
-        this.root    = (AppRoot) s.root();
+        this.root    = s.root();
     }
 
     @Write
@@ -109,7 +109,11 @@ you'd need to replace `LockAspect` — out of scope for normal use.
 
 ## Without AOP
 
-If your project doesn't use AOP, write the lock by hand:
+If your project doesn't use AOP, lock by hand. The contract is the same —
+mutation and `store()` under one lock — only the mechanism differs.
+
+`ReentrantReadWriteLock` (concurrent reads, exclusive writes — closest to
+`@Read` / `@Write`):
 
 ```java
 private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
@@ -125,7 +129,18 @@ public void add(Customer c) {
 }
 ```
 
-Same contract; more boilerplate.
+`synchronized` (simpler — single mutex, no read concurrency) is fine when
+read throughput isn't a bottleneck:
+
+```java
+public synchronized void add(Customer c) {
+    root.customers().put(c.email(), c);
+    storage.store(root.customers());
+}
+```
+
+Or `XThreads.executeSynchronized(Runnable)` for a JVM-wide monitor (see
+`concurrency-and-locking`).
 
 ## Testing
 
@@ -134,30 +149,12 @@ Spring context (e.g., pure `new CustomerService(storage)`), the aspect is **not
 active** — no locking happens. Either use `@SpringBootTest` for integration-
 level behaviour or add a manual lock for tests.
 
-## Common anti-patterns
+## Anti-patterns
 
-### 1. `@Read` on a method that mutates
+For `@Write` on long-running work, mixing `@Transactional` with `@Write`, and
+the silent no-op when `spring-boot-starter-aop` is missing, see the
+spring-boot SKILL.md (Anti-patterns) and `pitfalls-deep-dive.md`.
 
-The mutation will proceed under the read lock — concurrent writers block this
-thread but this thread's mutation is visible to other readers. Corrupts
-invariants.
-
-**Fix.** `@Write`, or restructure.
-
-### 2. Long-running work in `@Write`
-
-Blocks all other writers on the same lock for the entire duration. For big
-imports, process offline then acquire the lock briefly.
-
-### 3. Mixing `@Transactional` and `@Write`
-
-`@Transactional` does nothing useful for Eclipse Store. Combining them can
-confuse the framework's proxy chain. Pick one — `@Write` for Eclipse-Store-only
-services; `@Transactional` only when you also touch a JDBC datasource.
-
-### 4. Forgetting `spring-boot-starter-aop`
-
-The `@Read`/`@Write`/`@Mutex` annotations are silently no-ops without it. No
-warning, no error — just unsafe concurrent code.
-
-**Fix.** Add the starter; it's a one-line dependency.
+The one AOP-specific gotcha not covered there: a mutating method annotated
+`@Read` runs under the shared read lock, so concurrent writers don't serialize
+its mutation. **Use `@Write` for any method that mutates the graph.**
