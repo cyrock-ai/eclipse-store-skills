@@ -104,7 +104,6 @@ From `org.eclipse.serializer.reference`:
 |---|---|
 | `Lazy<T>` | The reference intermediary. |
 | `Lazy.Reference(T value)` | Factory — wraps an existing value. Value may be null. |
-| `Lazy.New(T value)` | Alias for `Reference`. |
 | `lazy.get()` | Returns T. Loads from storage if cleared. NPE if `lazy` itself is null. |
 | `Lazy.get(Lazy<T>)` | Static null-safe variant — returns null if the lazy is null. |
 | `lazy.clear()` | Drops the hard reference, keeps the id. |
@@ -115,7 +114,7 @@ From `org.eclipse.serializer.reference`:
 | `LazyReferenceManager.set(LazyReferenceManager)` | Install a custom manager. |
 | `Lazy.Checker(long millisTimeout, double memoryQuota)` | Pre-built checker. |
 
-From `org.eclipse.store.storage.types` (or similar module):
+From `org.eclipse.serializer.collections.lazy` (in the `serializer/base` module):
 
 | Symbol | Purpose |
 |---|---|
@@ -381,8 +380,6 @@ next `.get()` will reload.
 
 **"How do I avoid the LazyReferenceManager clearing things while I'm using them?"** →
 `.get()` updates the touched-timestamp. Active usage keeps the reference alive.
-
-**"Should I use `Lazy.New` or `Lazy.Reference`?"** → They are aliases.
 
 **"Does calling `.get()` twice load twice?"** → No. Once loaded, the reference is held.
 Only `.clear()` + GC drops it.

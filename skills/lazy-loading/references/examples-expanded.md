@@ -111,7 +111,7 @@ package tools;
 import java.time.Duration;
 import java.util.List;
 import org.eclipse.serializer.collections.lazy.LazyArrayList;
-import org.eclipse.store.storage.embedded.types.BatchStorer;
+import org.eclipse.serializer.persistence.types.BatchStorer;
 import org.eclipse.store.storage.embedded.types.EmbeddedStorage;
 import org.eclipse.store.storage.embedded.types.EmbeddedStorageManager;
 
