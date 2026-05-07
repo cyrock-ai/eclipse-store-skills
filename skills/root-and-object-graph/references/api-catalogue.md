@@ -2,61 +2,79 @@
 
 > **File paths** below are relative to the upstream source. Paths under `org/eclipse/store/…` live in [`eclipse-store/store`](https://github.com/eclipse-store/store); paths under `org/eclipse/serializer/…` live in [`eclipse-serializer/serializer`](https://github.com/eclipse-serializer/serializer). Clone the relevant repo alongside your project if you want the AI agent to resolve paths locally.
 
-## Root-related methods on `EmbeddedStorageManager`
+## Root-related methods (declared on `StorageManager`, inherited by `EmbeddedStorageManager`)
 
-File: `storage/embedded/src/main/java/org/eclipse/store/storage/embedded/types/EmbeddedStorageManager.java`
+File: `storage/storage/src/main/java/org/eclipse/store/storage/types/StorageManager.java`
 
 | Method | Return | Purpose |
 |---|---|---|
-| `root()` | `Object` | The active root — returns `customRoot()` if non-null, else `defaultRoot()`. Null if neither has been set. |
-| `defaultRoot()` | `Object` | The default-root slot. Set by `setRoot(...)`. |
-| `customRoot()` | `Object` | The custom-root slot. Set by `EmbeddedStorage.start(root, …)`. |
-| `setRoot(Object)` | `Object` | Replaces the default root. Returns the previous value. Does **not** persist — call `storeRoot()` after. |
-| `storeRoot()` | `long` | Persists whichever root is active. Returns the storage object id. |
+| `<R> R root()` | the root, or `null` | The active root reference. Generic convenience cast — no `Object` ceremony at the call site. |
+| `<R> R setRoot(R newRoot)` | the passed `newRoot` | Replace the in-memory root reference. Returns `newRoot` for fluent chaining. Does **not** persist — call `storeRoot()` after. |
+| `long storeRoot()` | the root's objectId | Persists the registered root. |
+| `<R> R ensureRoot(Supplier<R>)` | the (eventual) root | Default method. If no root is set yet, supplies one, calls `setRoot` and `storeRoot`. Otherwise returns the existing root unchanged. Throws `IllegalArgumentException` if the supplier returns `null` on the init branch. |
+| `PersistenceRootsView viewRoots()` | a read-only view | Iterates all technical root entries (custom/default/constants). Niche — for tooling and advanced migrations. |
+
+There is no `defaultRoot()` / `customRoot()` accessor on the current public API; the
+distinction between the two is internal (different identifiers in the type
+dictionary, different refactoring registration paths). Always read via `root()`.
 
 ## Connection-foundation hooks (advanced)
 
 File: `persistence/.../PersistenceRootResolverProvider.java`
 
-When you need to intercept root registration beyond default/custom (e.g., to register
-JVM-static constants), use the connection foundation on the embedded-storage foundation:
+When you need to intercept root registration beyond the basic default/custom split
+(e.g., to register JVM-static constants), use the connection foundation on the
+embedded-storage foundation:
 
 ```java
 EmbeddedStorage.Foundation(config)
     .onConnectionFoundation(cf -> {
         cf.getRootResolverProvider()
-          .registerCustomRootSupplier(() -> myCustomRoot)
-          .registerRoot("auxKey", auxObject);
+          .registerRootSupplier(() -> myCustomRoot)   // no-arg variant uses the
+                                                      // default root identifier
+          .registerRoot("auxKey", auxObject);          // additional named root
     });
 ```
 
-Relevant interfaces:
+Relevant types (all in `serializer/persistence/persistence/...`):
 
 | Interface | File | Purpose |
 |---|---|---|
-| `PersistenceRootResolverProvider` | `persistence/binary/types/PersistenceRootResolverProvider.java` | Registers roots, aux entries, constants. |
-| `PersistenceRootResolver` | `persistence/binary/types/PersistenceRootResolver.java` | Resolves an identifier → object during load. |
-| `PersistenceRootReference` | `persistence/binary/types/PersistenceRootReference.java` | The reference wrapper used for root slots. |
+| `PersistenceRootResolverProvider` | `persistence/types/PersistenceRootResolverProvider.java` | Registers roots, aux entries, constants. |
+| `PersistenceRootResolver` | `persistence/types/PersistenceRootResolver.java` | Resolves an identifier → object during load. |
+| `PersistenceRootReference` | `persistence/types/PersistenceRootReference.java` | The reference wrapper used for root slots. |
+
+Available registration methods on `PersistenceRootResolverProvider`:
+
+| Method | Purpose |
+|---|---|
+| `registerRoot(String identifier, Object instance)` | Register a fixed instance under a named root identifier. |
+| `registerRootSupplier(Supplier<?>)` | Register a default-identifier root constructed lazily by the supplier. |
+| `registerRootSupplier(String identifier, Supplier<?>)` | Same with explicit identifier. |
+| `registerRootSuppliers(XGettingTable<String, Supplier<?>>)` | Bulk variant. |
 
 Note: in 99% of applications the `setRoot` / `customRoot` story is all you need. The
 foundation-level root resolver is for libraries that layer on top of Eclipse Store.
 
 ## Typing and the root
 
-`root()`, `defaultRoot()`, `customRoot()` all return `Object`. To avoid casts:
+`root()` is declared `<R> R root()` so a typed assignment compiles without an
+explicit cast (the unchecked warning at the call site is the cost). To avoid even
+the warning:
 
 - Use **custom root** (Pattern A in SKILL.md) — keep your own typed reference.
-- If you *must* use the default root, centralize the cast in one accessor:
+- If you *must* read via the manager, centralize the assignment in one accessor:
 
 ```java
+@SuppressWarnings("unchecked")
 private static AppRoot rootOf(EmbeddedStorageManager s) {
-    return (AppRoot) s.root();   // documented cast; single maintenance point
+    return s.root();   // single maintenance point for the unchecked cast
 }
 ```
 
 ## `XThreads.executeSynchronized` (optional helper)
 
-File: `base/src/main/java/org/eclipse/serializer/util/X.java` (and `XThreads` utility).
+File: `serializer/base/src/main/java/org/eclipse/serializer/concurrency/XThreads.java`.
 
 ```java
 XThreads.executeSynchronized(() -> {
@@ -65,23 +83,25 @@ XThreads.executeSynchronized(() -> {
 });
 ```
 
-This uses a single JVM-wide monitor. Correct but coarse — in a multi-aggregate app,
-write per-aggregate locks yourself.
+`Runnable` and `Supplier<T>` overloads. Uses a single JVM-wide monitor. Correct but
+coarse — in a multi-aggregate app, write per-aggregate locks yourself.
 
 ## Constants registration (JVM-static objects)
 
-For singletons or enum-like constants that the graph references, register them so
-Eclipse Store identifies them by reference instead of by value:
+For singletons or enum-like constants that the graph references, register them as
+named roots on the connection foundation's root resolver provider so Eclipse Store
+identifies them by reference instead of by value:
 
 ```java
 EmbeddedStorage.Foundation(config)
     .onConnectionFoundation(cf ->
-        cf.registerConstantInstance(AppConstants.SYSTEM_USER)
+        cf.getRootResolverProvider()
+          .registerRoot("AppConstants.SYSTEM_USER", AppConstants.SYSTEM_USER)
     );
 ```
 
-Each call adds one constant. Duplicates are rejected. Registration must happen before
-`.start()`.
+Pick stable identifier strings (renaming them later requires a refactoring mapping).
+Registration must happen before `.start()`.
 
 ## Summary — pick your tool
 
@@ -90,5 +110,5 @@ Each call adds one constant. Duplicates are rejected. Registration must happen b
 | …bootstrap a real application | `start(root, dir)` with a custom `AppRoot` class. |
 | …write a one-off script | `start(dir)` + `setRoot(new HashMap<>())`. |
 | …replace the root mid-app | `setRoot(newRoot); storeRoot();` then GC. |
-| …register a static constant | Foundation + `registerConstantInstance`. |
+| …register a static constant | Foundation + `cf.getRootResolverProvider().registerRoot("ID", instance)`. |
 | …swap to a different root class | Custom migration + `setRoot` or `legacy-type-mapping`. |

@@ -151,11 +151,14 @@ duplicate copies of the constant instance after each restart.
 
 **Root cause.** Constant registration must happen at foundation build time.
 
-**Fix.** Use the foundation pattern:
+**Fix.** Use the foundation pattern with the root resolver provider:
 
 ```java
 EmbeddedStorage.Foundation(config)
-    .onConnectionFoundation(cf -> cf.registerConstantInstance(AppConstants.SYSTEM_USER))
+    .onConnectionFoundation(cf ->
+        cf.getRootResolverProvider()
+          .registerRoot("AppConstants.SYSTEM_USER", AppConstants.SYSTEM_USER)
+    )
     .start(root);
 ```
 

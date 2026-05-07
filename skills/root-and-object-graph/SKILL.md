@@ -20,7 +20,7 @@ description: >
   root", or needs help deciding whether to use a bare object, a collection, or
   a dedicated root class, and how to structure the top of the object graph for
   maintainability and performance.
-version: 0.1.0
+version: 0.1.1
 ---
 
 # Eclipse Store — Root Instance & Object Graph Design
@@ -69,21 +69,22 @@ concepts. It persists an arbitrary Java object graph, but it has to start readin
 somewhere — hence the root. Think of the root as a pointer to your entire in-memory data
 model.
 
-Two mechanisms exist:
+There is exactly one root reference per database. What differs is *how* you wire it
+in:
 
-- **Default root** — Eclipse Store owns the reference. Set with `setRoot(Object)`, read
-  with `defaultRoot()` or `root()`. No constructor coupling; you can assign any object.
-- **Custom root** — you own the reference. Pass it into `EmbeddedStorage.start(root, …)`.
-  Eclipse Store **fills that instance in place** with loaded state. You keep a typed
-  field in your app code and never cast.
+- **Default root (registered post-start)** — start the storage with no root, then
+  `setRoot(o)` + `storeRoot()`. No constructor coupling; you can assign any object.
+- **Custom root (passed at start)** — pass your instance into
+  `EmbeddedStorage.start(root, …)`. Eclipse Store **fills that instance in place**
+  with loaded state. You keep a typed field in your app code and never cast.
 
 Both persist identically; the difference is API ergonomics and lifecycle:
 
-| | `defaultRoot` | `customRoot` |
+| | Default root | Custom root |
 |---|---|---|
 | How to register | `setRoot(o)` then `storeRoot()` | Pass to `start(root, …)` |
-| Access | `storage.root()` — returns `Object` | Your typed variable |
-| When loaded | Immediately after `start()` | Immediately after `start()`; fields populated in place |
+| Access | `storage.root()` (returns `<R> R`) | Your typed variable |
+| When loaded | After `setRoot(...)` (or on next start) | Immediately after `start()`; fields populated in place |
 | Typical use | Scripts, tests, "Hello World" | **Real applications** |
 
 **Recommendation**: use a custom root for anything beyond a toy. It avoids casts, lets
@@ -91,15 +92,14 @@ your IDE autocomplete, and makes refactoring tractable.
 
 ## Core API
 
-From `org.eclipse.store.storage.embedded.types.EmbeddedStorageManager`:
+Inherited from `org.eclipse.store.storage.types.StorageManager`:
 
 | Method | Purpose |
 |---|---|
-| `Object root()` | Returns whichever root is in use (custom if set, else default). |
-| `Object defaultRoot()` | The default-root slot specifically. |
-| `Object customRoot()` | The custom-root slot specifically. |
-| `Object setRoot(Object newRoot)` | Replace the default root. Returns the previous value. |
-| `long storeRoot()` | Persist the current root. Works for both variants. |
+| `<R> R root()` | The active root, or `null` if none has been set. Generic-typed convenience. |
+| `<R> R setRoot(R newRoot)` | Replace the in-memory root reference. Returns the passed `newRoot` for fluent use. **Does not persist** — call `storeRoot()` after. |
+| `long storeRoot()` | Persist the registered root. Returns the root's objectId. |
+| `<R> R ensureRoot(Supplier<R>)` | If no root is set yet, run the supplier, `setRoot` and `storeRoot`. Otherwise no-op. Default method on `StorageManager`. |
 
 `EmbeddedStorage.start(Object root, …)` registers `root` as the custom root.
 
@@ -166,7 +166,7 @@ If you need to replace the root entirely — e.g., you're restructuring the top 
 graph and can afford a cutover — use `setRoot`:
 
 ```java
-OldRoot oldRoot = (OldRoot) storage.customRoot();   // or storage.root()
+OldRoot oldRoot = storage.root();
 NewRoot newRoot = migrate(oldRoot);
 storage.setRoot(newRoot);
 storage.storeRoot();
@@ -348,10 +348,12 @@ no-arg constructor because Spring instantiates it. See `spring-boot`.
 **"Can the root change type between runs?"** → Only with explicit migration
 (`legacy-type-mapping`) or by rebuilding the database.
 
-**"How do I access persisted JVM constants?"** → Register them on the connection
-foundation with `registerConstant(Object constantInstance, long oid)`. See the Eclipse
-Store docs on "constant instances" — this is niche and mostly solved by design-by-not
-(don't reference JVM constants from the graph if you can avoid it).
+**"How do I access persisted JVM constants?"** → Register them as named roots on the
+connection foundation: `cf.getRootResolverProvider().registerRoot("MY.CONST", instance)`.
+The persistence layer associates each constant's stored OID with the live JVM
+instance under that identifier. See the Eclipse Store docs on "constant instances" —
+this is niche and mostly solved by design-by-not (don't reference JVM constants from
+the graph if you can avoid it).
 
 ## Deeper lookups (on-demand)
 
