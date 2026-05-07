@@ -1,5 +1,10 @@
 # Eclipse Store & Serializer Skills for AI Coding Agents
 
+> **🚧 Work in Progress.** This skill set is under active development. Skill
+> content, trigger surfaces, file layout, and per-target output formats may
+> change without notice. Pin to a specific commit if you depend on a stable
+> shape, and expect breaking changes between versions until a 1.0 release.
+
 Opinionated, topic-focused skills for building applications with
 [Eclipse Store](https://eclipsestore.io) and [Eclipse Serializer](https://github.com/eclipse-serializer/serializer),
 designed to be consumed by multiple AI coding agents.
