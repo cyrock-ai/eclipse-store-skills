@@ -1,5 +1,9 @@
 # Pitfalls deep-dive — custom-type-handlers
 
+These pitfalls cover the declarative `CustomBinaryHandler` style. For pitfalls
+that only apply to manual `AbstractBinaryHandlerCustom` (offset mismatches,
+varying-length flag, header constants, etc.) see `binary-offset-api.md`.
+
 ## 1. Stateful handler causing race conditions
 
 **Reproducer.**
@@ -7,9 +11,9 @@
 ```java
 public class BadHandler extends CustomBinaryHandler<Foo> {
     private long lastOid;
-    @Override public void store(Binary data, Foo inst, long oid, ...) {
-        lastOid = oid;   // RACE
-        ...
+    @Override public Foo create(Binary data, PersistenceLoadHandler h) {
+        this.lastOid = ...;   // RACE — handler may run on multiple threads
+        return new Foo();
     }
 }
 ```
@@ -18,77 +22,33 @@ public class BadHandler extends CustomBinaryHandler<Foo> {
 
 **Root cause.** Multiple threads can invoke the same handler simultaneously.
 
-**Fix.** Keep handlers stateless. Any per-call data stays in method locals or the
-`Binary` / `PersistenceStoreHandler`.
+**Fix.** Keep handlers stateless. The only fields on a handler subclass should
+be `final BinaryField<T>` instances. Per-call data lives in method locals or in
+the framework-supplied `Binary` / `PersistenceLoadHandler`.
 
-## 2. Offset mismatch between store and read
-
-**Reproducer.**
-
-```java
-// store
-data.store_long(0, ...);
-data.store_int(8, ...);
-
-// read
-int i = data.read_int(4);   // wrong offset
-```
-
-**Symptom.** Garbled values at load time.
-
-**Root cause.** Offsets don't match.
-
-**Fix.** Define offsets as `static final` constants shared by both paths:
-
-```java
-private static final long OFF_long = 0, OFF_int = OFF_long + Long.BYTES;
-```
-
-## 3. Forgetting `iterateLoadableReferences`
+## 2. Reading references in `create`
 
 **Reproducer.**
-
-```java
-@Override public boolean hasPersistedReferences() { return true; }
-// no iterateLoadableReferences
-```
-
-**Symptom.** `updateState` sees nulls for referenced objects.
-
-**Root cause.** The loader doesn't fetch referenced objects if you don't report
-them.
-
-**Fix.** Always implement `iterateLoadableReferences` when `hasPersistedReferences`
-is true:
 
 ```java
 @Override
-public void iterateLoadableReferences(Binary data, PersistenceReferenceLoader it) {
-    it.acceptObjectId(data.read_long(OFFSET_ref1));
-    it.acceptObjectId(data.read_long(OFFSET_ref2));
+public Money create(Binary data, PersistenceLoadHandler handler) {
+    BigDecimal amount = (BigDecimal) this.amount.readReference(data, handler);
+    return new Money(amount, null);   // amount is null — refs not yet resolved
 }
 ```
 
-## 4. Declaring `hasVaryingPersistedLengthInstances = false` but writing variable
-sizes
+**Symptom.** Reference fields are null at the end of `create`.
 
-**Reproducer.** A handler for a class with `byte[] data` declares fixed-length.
-Storage reads past the end or underruns.
+**Root cause.** The framework resolves referenced objects between `create` and
+`initializeState`. During `create` the load handler returns null for any
+reference id.
 
-**Symptom.** Corrupted reads, random IndexOutOfBounds.
+**Fix.** Read primitives in `create`; read references in `initializeState`.
+Or pass a setter to `Field(...)` so the framework writes the reference for you
+in `updateState` and you don't need `initializeState` at all.
 
-**Fix.** Return `true` for varying-length types, and include the length in your
-binary layout:
-
-```java
-long len = inst.data().length;
-long total = Long.BYTES + len;
-data.storeEntityHeader(total, typeId(), oid);
-data.store_long(0, len);
-data.store_bytes(Long.BYTES, inst.data());
-```
-
-## 5. Registering the handler after `.start()`
+## 3. Registering the handler after `.start()`
 
 **Reproducer.**
 
@@ -107,53 +67,57 @@ EmbeddedStorage.Foundation(config)
     .start(root);
 ```
 
-## 6. Using `XMemory` on the wrong field
+## 4. Wrong field name in `getClassDeclaredFieldOffset`
 
 **Reproducer.**
 
 ```java
-XMemory.setObject(inst, XMemory.objectFieldOffset(Money.class, "amnt"), amount);
-//                                                             ^ typo
+XMemory.setObject(inst, getClassDeclaredFieldOffset(Money.class, "amnt"), amount);
+//                                                                ^ typo
 ```
 
-**Symptom.** `NoSuchFieldException` at startup.
+**Symptom.** `NoSuchFieldException` at startup or first load.
 
-**Root cause.** Field name must match the source.
+**Root cause.** The field name must match the source.
 
-**Fix.** Keep the handler's offset lookups next to the field declarations; test
-round-trips.
+**Fix.** Keep the offset lookups next to the `BinaryField` declarations; round-
+trip tests catch this immediately.
 
-## 7. Not handling null references
+## 5. Not handling null references
 
 **Reproducer.**
 
 ```java
-BigDecimal amount = (BigDecimal) lh.lookupObject(data.read_long(OFFSET_amount));
+BigDecimal amount = (BigDecimal) this.amount.readReference(data, handler);
 amount.add(BigDecimal.ONE);   // NPE if it was null
 ```
 
 **Symptom.** NPE at load time after nulls were stored.
 
-**Root cause.** `lookupObject(0)` returns null — that's how Eclipse Store encodes
-null references.
+**Root cause.** A stored object id of 0 means null; `readReference` returns
+null in that case.
 
 **Fix.** Let downstream code decide; don't assume the reference is non-null.
 
-## 8. Declaring no `CustomField`s
+## 6. No `BinaryField` declarations
 
 **Reproducer.**
 
 ```java
-super(Money.class, CustomFields());
+public class MoneyHandler extends CustomBinaryHandler<Money> {
+    public MoneyHandler() { super(Money.class); }
+    @Override public Money create(...) { return new Money(null, null); }
+    // no BinaryField fields → empty type dictionary
+}
 ```
 
-**Symptom.** Schema evolution can't reason about the type. Legacy type mapping
-won't work.
+**Symptom.** Round-trips lose data; legacy type mapping has nothing to match
+against.
 
-**Fix.** Always declare fields. Even if you do custom byte-packing inside
-`store`, declare the fields so Eclipse Store's dictionary knows the shape.
+**Fix.** Declare one `BinaryField<T>` instance field per persisted field, in
+layout order.
 
-## 9. Registering two handlers for the same class
+## 7. Registering two handlers for the same class
 
 **Reproducer.**
 
@@ -168,7 +132,7 @@ and internals).
 **Fix.** One handler per class. Delete the old; wrap any migration via a legacy
 handler if needed.
 
-## 10. Storing a live resource
+## 8. Storing a live resource
 
 **Reproducer.**
 
@@ -181,32 +145,27 @@ public class MyObj {
 ```
 
 **Fix.** Don't serialize live resources. Mark them `transient` (Eclipse Store
-respects that) or reacquire them in `create`/`updateState`.
+respects that) or reacquire them in `create` / `initializeState`.
 
-## 11. Sub-classing a JDK collection and adding a handler
+## 9. Sub-classing a JDK collection and adding a handler
 
 If you subclass `ArrayList` and then register a custom handler for your subclass,
 the specialized `ArrayList` handling is bypassed entirely — which is expected.
 But don't expect the JDK handler's optimizations to apply.
 
-Prefer composition (see `storing-data` anti-pattern 6).
+Prefer composition (see `storing-data` anti-pattern).
 
-## 12. Copying the header constant wrong
+## 10. Reordering `BinaryField` declarations
 
-```java
-// WRONG
-long total = Binary.objectIdByteLength() * 2;   // only the refs, not the header
-data.storeEntityHeader(total, typeId(), oid);
-```
+**Reproducer.** A handler had `amount` then `currency`. A refactor swaps the
+declaration order to `currency` then `amount`.
 
-The `storeEntityHeader` *length* parameter is the **payload** length (bytes after
-the header), not including the 24-byte header itself. `storeEntityHeader` adds the
-header.
+**Symptom.** New writes use the swapped layout. Existing data still reads the
+fields by position — `amount` now points at the currency bytes and vice versa.
+Casts blow up at load time.
 
-**Fix.** Length = sum of all field sizes. For two references:
-`Binary.referenceBinaryLength(2)` = 16.
+**Root cause.** `BinaryField` declaration order *is* the binary layout.
 
-## 13. Assuming `create` and `updateState` run on the same thread
-
-They might, might not. Don't carry state between them via instance fields. Carry
-it via the `Binary` buffer or fetch it fresh in each call.
+**Fix.** Treat the order of `BinaryField` instance fields as part of the
+on-disk format. If you must reorder, write a `BinaryLegacyTypeHandler.AbstractCustom<T>`
+for the old layout (see `legacy-type-mapping`).
