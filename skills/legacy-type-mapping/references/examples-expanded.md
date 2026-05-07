@@ -213,30 +213,7 @@ Restart. If everything is clean, the type dictionary still has an entry (until t
 next rewrite) but no instance is loaded through it; `PersistenceUnreachableTypeHandler`
 is installed as a guard.
 
-## Example 5 — Custom resultor for CI / dry-run
-
-Fail the build if any legacy mapping is ambiguous:
-
-```java
-foundation.onConnectionFoundation(f -> f.setLegacyTypeMappingResultor(
-    (analysis, currentType) -> {
-        analysis.memberMappings().values().stream()
-            .filter(m -> m.similarity() < 0.7)
-            .findFirst()
-            .ifPresent(m -> {
-                throw new IllegalStateException(
-                    "Low-confidence mapping for " + currentType + ": " + m);
-            });
-        return LoggingLegacyTypeMappingResultor.Instance
-            .accept(analysis, currentType);
-    }
-));
-```
-
-Run this in a pre-production environment with copied data. If startup fails, you
-know to add an explicit CSV entry.
-
-## Example 6 — Custom heuristic via annotation
+## Example 5 — Custom heuristic via annotation
 
 ```java
 public @interface MappedFrom { String value(); }
@@ -249,12 +226,21 @@ public class Customer {
 }
 ```
 
-Implement a `PersistenceMemberSimilator` that returns `1.0` for pairs matched by
-`@MappedFrom`, else falls back to Levenshtein. Install:
+Implement a `Similator<PersistenceTypeDefinitionMember>` that returns `1.0` for
+pairs matched by `@MappedFrom`, else falls back to Levenshtein. Plug it in by
+extending `PersistenceMemberMatchingProvider.Default` and overriding
+`provideMemberMatchingSimilator(...)`:
 
 ```java
 foundation.onConnectionFoundation(f -> f.setLegacyMemberMatchingProvider(
-    new AnnotationAwareSimilator()
+    new PersistenceMemberMatchingProvider.Default() {
+        @Override
+        public Similator<PersistenceTypeDefinitionMember> provideMemberMatchingSimilator(
+            final TypeMappingLookup<Float> typeSimilarity
+        ) {
+            return new AnnotationAwareSimilator(typeSimilarity);
+        }
+    }
 ));
 ```
 
