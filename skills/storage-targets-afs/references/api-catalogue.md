@@ -2,7 +2,7 @@
 
 ## Core AFS interfaces
 
-Package: `org.eclipse.serializer.afs.types`.
+Package: `org.eclipse.serializer.afs.types` (in the *serializer* repository).
 
 | Interface | Purpose |
 |---|---|
@@ -10,11 +10,13 @@ Package: `org.eclipse.serializer.afs.types`.
 | `ADirectory` | Directory path inside the filesystem. |
 | `AFile` | File within a directory. |
 
-Factories:
+Filesystem factories (in the *store* repository, each in its own package):
 
-- `NioFileSystem.New()` — local.
-- `NioFileSystem.New(Path baseDir)` — local with a specific base.
-- `BlobStoreFileSystem.New(BlobStoreConnector)` — blob-store wrapper.
+- `org.eclipse.store.afs.nio.types.NioFileSystem.New()` — local NIO.
+- `org.eclipse.store.afs.nio.types.NioFileSystem.New(Path baseDir)` — local NIO
+  rooted at a specific base.
+- `org.eclipse.store.afs.blobstore.types.BlobStoreFileSystem.New(BlobStoreConnector)`
+  — blob-store wrapper.
 
 Usage:
 
@@ -37,7 +39,7 @@ EmbeddedStorage.start(root, storageDir);
 | Oracle Cloud Object | `afs-oraclecloud-objectstorage` | `OracleCloudObjectStorageConnector.Caching(objectStorage)` |
 | Redis | `afs-redis` | `RedisConnector.Caching(jedisPool)` |
 | Kafka | `afs-kafka` | `KafkaConnector.Caching(kafkaProps)` |
-| SQL (generic) | `afs-sql` | `SqlConnector.Caching(dataSource, table)` |
+| SQL (generic) | `afs-sql` | `SqlConnector.Caching(SqlProvider)` — provider built via `SqlProviderPostgres.New(dataSource)` (also `SqlProviderMariaDb` / `SqlProviderOracle` / `SqlProviderSqlite` / `SqlProviderHana`) |
 
 All `BlobStoreFileSystem`-based backends share the same pattern:
 
@@ -82,25 +84,89 @@ Same structure for `backup-filesystem.*` (a backup AFS, independent from live).
 | Key | Values |
 |---|---|
 | `.target` | `azure.storage` |
-| `.azure.storage.connection-string` | string |
-| `.azure.storage.account-name` / `.account-key` | alt to connection string |
+| `.azure.storage.endpoint` | blob service endpoint URL |
+| `.azure.storage.connection-string` | full connection string |
+| `.azure.storage.encryption-scope` | server-side encryption scope |
+| `.azure.storage.cache` | true/false (default `true`) |
+| `.azure.storage.credentials.type` | `basic` / `shared-key` |
+| `.azure.storage.credentials.username` / `.password` | when `type=basic` |
+| `.azure.storage.credentials.account-name` / `.account-key` | when `type=shared-key` |
 
 ### Redis-specific keys
 
 | Key | Values |
 |---|---|
 | `.target` | `redis` |
-| `.redis.uri` | connection string |
-| `.redis.client.user-database` | bool |
+| `.redis.uri` | Redis URI (host/port + auth + database) |
+| `.redis.cache` | true/false (default `true`) |
 
 ### Kafka-specific keys
 
 | Key | Values |
 |---|---|
 | `.target` | `kafka` |
-| `.kafka.properties.<any-kafka-prop>` | passthrough |
+| `.kafka.<any-kafka-property>` | Pass-through to Kafka client `Properties` (e.g. `kafka.bootstrap.servers=…`). |
+| `.kafka.cache` | true/false (default `true`) |
 
-Exact key list per backend is in the upstream `.adoc` under
+### DynamoDB-specific keys
+
+Same shape as S3 minus `directory-bucket`.
+
+| Key | Values |
+|---|---|
+| `.target` | `aws.dynamodb` |
+| `.aws.dynamodb.region` | AWS region id |
+| `.aws.dynamodb.endpoint-override` | URL |
+| `.aws.dynamodb.cache` | true/false (default `true`) |
+| `.aws.dynamodb.credentials.type` | `environment-variables` / `system-properties` / `static` / `default` |
+| `.aws.dynamodb.credentials.access-key-id` / `.secret-access-key` | when `type=static` |
+
+### Google Cloud Firestore-specific keys
+
+| Key | Values |
+|---|---|
+| `.target` | `googlecloud.firestore` |
+| `.googlecloud.firestore.project-id` | GCP project id |
+| `.googlecloud.firestore.quota-project-id` | project for quota / billing |
+| `.googlecloud.firestore.database-id` | database id |
+| `.googlecloud.firestore.host` | service host |
+| `.googlecloud.firestore.emulator-host` | emulator host |
+| `.googlecloud.firestore.client-lib-token` | client library token |
+| `.googlecloud.firestore.cache` | true/false (default `true`) |
+| `.googlecloud.firestore.credentials.type` | `none` / `input-stream` / `default` |
+| `.googlecloud.firestore.credentials.input-stream` | path to credentials JSON when `type=input-stream` |
+
+### Oracle Cloud Object Storage-specific keys
+
+| Key | Values |
+|---|---|
+| `.target` | `oraclecloud.object-storage` |
+| `.oraclecloud.object-storage.region` | OCI region (e.g. `us-phoenix-1`) |
+| `.oraclecloud.object-storage.endpoint` | endpoint URL |
+| `.oraclecloud.object-storage.cache` | true/false (default `true`) |
+| `.oraclecloud.object-storage.config-file.path` | OCI config file path; supports `classpath:` prefix and URLs (default `~/.oci/config`) |
+| `.oraclecloud.object-storage.config-file.profile` | profile within the config file (default `DEFAULT`) |
+| `.oraclecloud.object-storage.config-file.charset` | config-file charset |
+| `.oraclecloud.object-storage.client.connection-timeout-millis` | int (default `10000`) |
+| `.oraclecloud.object-storage.client.read-timeout-millis` | int (default `60000`) |
+| `.oraclecloud.object-storage.client.max-async-threads` | int (default `50`) |
+
+### SQL-specific keys
+
+One target id per dialect: `sql.mariadb`, `sql.oracle`, `sql.postgres`,
+`sql.sqlite`, `sql.hana`. The keys below are read by all five (replace
+`<engine>` with the chosen one).
+
+| Key | Values |
+|---|---|
+| `.target` | `sql.<engine>` |
+| `.sql.<engine>.data-source-provider` | FQCN of a class providing a `DataSource` for the connector |
+| `.sql.<engine>.cache` | true/false (default `true`) |
+
+The dialect creator builds the right `SqlProvider*` (Postgres, MariaDb,
+Oracle, Sqlite, Hana) under the hood.
+
+Exact key list per backend is also in the upstream `.adoc` under
 `docs/modules/storage/pages/storage-targets/blob-stores/<backend>.adoc`.
 
 ## Credentials strategies (AWS)

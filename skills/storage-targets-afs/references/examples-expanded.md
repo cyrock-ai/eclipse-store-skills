@@ -185,11 +185,20 @@ EmbeddedStorage.start(root, fs.ensureDirectoryPath("eclipse-store-table", "data"
 
 ## Example 9 — SQL-blob (JDBC)
 
-```java
-DataSource ds = ...;   // any JDBC DataSource
-BlobStoreFileSystem fs = BlobStoreFileSystem.New(
-    SqlConnector.Caching(ds, "eclipse_store_blobs"));
+`SqlConnector.Caching(...)` takes a `SqlProvider` — the dialect-specific class
+that adapts a `DataSource` to AFS. There is one provider per supported engine:
+`SqlProviderPostgres` / `SqlProviderMariaDb` / `SqlProviderOracle` /
+`SqlProviderSqlite` / `SqlProviderHana`.
 
+```java
+import javax.sql.DataSource;
+import org.eclipse.store.afs.sql.types.SqlConnector;
+import org.eclipse.store.afs.sql.types.SqlProviderPostgres;
+
+DataSource ds = ...;   // any JDBC DataSource
+SqlProviderPostgres provider = SqlProviderPostgres.New(ds);   // overload with catalog/schema also available
+
+BlobStoreFileSystem fs = BlobStoreFileSystem.New(SqlConnector.Caching(provider));
 EmbeddedStorage.start(root, fs.ensureDirectoryPath("app", "data"));
 ```
 
