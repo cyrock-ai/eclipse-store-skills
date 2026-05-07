@@ -23,7 +23,7 @@ description: >
   "createStorer", "eager storer", "lazy storer", "bulk insert", "store a
   list", "transaction", "commit", "hidden field not stored", or is confused
   about why a mutation didn't persist after `store()`.
-version: 0.1.0
+version: 0.1.1
 ---
 
 # Eclipse Store — Storing Data
@@ -116,7 +116,7 @@ All methods live on `EmbeddedStorageManager` / `StorageConnection`:
 |---|---|---|
 | `long store(Object x)` | `x` + lazily referenced new subgraph | **The workhorse.** Convenience method, always lazy, auto-commits. |
 | `long[] storeAll(Object... xs)` | each `x` + referenced new subgraph | The array itself is not stored. Always lazy, auto-commits. |
-| `long[] storeAll(Iterable<?> xs)` | each element + referenced new subgraph | The iterable itself is not stored. Always lazy, auto-commits. |
+| `void storeAll(Iterable<?> xs)` | each element + referenced new subgraph | The iterable itself is not stored. **Returns `void`** — no objectIds. Always lazy, auto-commits. |
 | `long storeRoot()` | the root object | Special case; rarely needed after startup (see note below). Always lazy. |
 | `Storer createStorer()` | programmable | The default lazy storer. **Not `AutoCloseable`** — call `.commit()` explicitly; do *not* use try-with-resources. |
 | `Storer createLazyStorer()` | explicit lazy | Same as default. **Not `AutoCloseable`.** |
