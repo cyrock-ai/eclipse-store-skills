@@ -14,7 +14,8 @@ EmbeddedStorageManager storage = EmbeddedStorageConfiguration.Builder()
     .setHousekeepingInterval(Duration.ofSeconds(1))
     .setHousekeepingTimeBudget(Duration.ofMillis(50))
     .createEmbeddedStorageFoundation()
-    .createEmbeddedStorageManager();   // returns a STARTED manager
+    .createEmbeddedStorageManager();
+storage.start();
 ```
 
 ## Example 2 — INI on the classpath
@@ -42,6 +43,7 @@ EmbeddedStorageManager storage = EmbeddedStorageConfiguration
     .load("/META-INF/eclipsestore/storage.ini")
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
+storage.start();
 ```
 
 ## Example 3 — XML config with user-home directory
@@ -63,6 +65,7 @@ EmbeddedStorageManager storage = EmbeddedStorageConfiguration
     .load("/storage.xml")
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
+storage.start();
 ```
 
 ## Example 4 — YAML config (requires `configuration-yaml`)
@@ -84,7 +87,7 @@ housekeeping-time-budget: 50ms
 
 ```java
 import org.eclipse.serializer.configuration.types.ConfigurationLoader;
-import org.eclipse.serializer.configuration.yaml.ConfigurationParserYaml;
+import org.eclipse.serializer.configuration.yaml.types.ConfigurationParserYaml;
 
 EmbeddedStorageManager storage = EmbeddedStorageConfiguration.load(
     ConfigurationLoader.New("/META-INF/eclipsestore/storage.yaml"),
@@ -92,6 +95,7 @@ EmbeddedStorageManager storage = EmbeddedStorageConfiguration.load(
 )
 .createEmbeddedStorageFoundation()
 .createEmbeddedStorageManager();
+storage.start();
 ```
 
 ## Example 5 — Read-only manager over a file-system snapshot
@@ -110,6 +114,7 @@ var ro = new StorageWriteControllerReadOnlyMode(foundation.getWriteController())
 foundation.setWriteController(ro);
 
 try (EmbeddedStorageManager storage = foundation.createEmbeddedStorageManager()) {
+    storage.start();
     AppRoot root = (AppRoot) storage.root();
     root.orders().forEach(System.out::println);
     // any storage.store(...) call throws
@@ -119,7 +124,7 @@ try (EmbeddedStorageManager storage = foundation.createEmbeddedStorageManager())
 ## Example 6 — Deep customization via raw foundation (custom file provider)
 
 ```java
-import org.eclipse.serializer.afs.nio.types.NioFileSystem;
+import org.eclipse.store.afs.nio.types.NioFileSystem;
 import org.eclipse.store.storage.embedded.types.EmbeddedStorage;
 import org.eclipse.store.storage.embedded.types.EmbeddedStorageManager;
 import org.eclipse.store.storage.types.Storage;
@@ -154,7 +159,7 @@ storage-directory = data
 channel-count = 2
 ```
 
-Prod override: `-Dorg.eclipse.store.configuration.path=/etc/myapp/storage.ini`.
+Prod override: `-Dorg.eclipse.store.storage.configuration.path=/etc/myapp/storage.ini`.
 
 Java code:
 
@@ -162,6 +167,7 @@ Java code:
 EmbeddedStorageManager storage = EmbeddedStorageConfiguration.load()
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
+storage.start();
 ```
 
 Ops changes the prod INI, restarts the service; no code change needed.
@@ -199,4 +205,5 @@ Call site:
 EmbeddedStorageManager storage = StorageConfigs.prod()
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
+storage.start();
 ```

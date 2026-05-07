@@ -92,7 +92,7 @@ EmbeddedStorageConfiguration.load("/META-INF/eclipsestore/storage.xml")
     .createEmbeddedStorageManager();
 
 // From the default location (classpath `eclipsestore.properties`,
-// or the path in system property `org.eclipse.store.configuration.path`)
+// or the path in system property `org.eclipse.store.storage.configuration.path`)
 EmbeddedStorageConfiguration.load()
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
@@ -128,9 +128,9 @@ storage.start();      // foundation.createEmbeddedStorageManager() returns an un
                       // (unlike EmbeddedStorage.start(...) which returns a started one).
 ```
 
-**Gotcha**: `createEmbeddedStorageManager()` returns a **started** manager. `.start()`
-is a no-op (or error) on an already-started manager. If you need an unstarted one,
-use `createEmbeddedStorageFoundation()` and hold the foundation.
+**Gotcha**: `createEmbeddedStorageManager()` returns an **unstarted** manager — call
+`.start()` on it (shown above). `EmbeddedStorage.start(...)` is the alternative that
+returns a started one.
 
 ### Pattern B — INI file plus classpath placement
 
@@ -153,6 +153,7 @@ EmbeddedStorageManager storage = EmbeddedStorageConfiguration
     .load("/META-INF/eclipsestore/storage.ini")
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
+storage.start();
 ```
 
 ### Pattern C — XML with user-home directory
@@ -171,13 +172,14 @@ EmbeddedStorageManager storage = EmbeddedStorageConfiguration
 
 Operations want to swap configs without redeploying. Keep one config at
 `src/main/resources/eclipsestore.properties` (default), override with
-`-Dorg.eclipse.store.configuration.path=/etc/myapp/storage.ini`.
+`-Dorg.eclipse.store.storage.configuration.path=/etc/myapp/storage.ini`.
 
 ```java
 // Finds the file via the system property if set, else falls back to default name on classpath
-EmbeddedStorageConfiguration.load()
+EmbeddedStorageManager storage = EmbeddedStorageConfiguration.load()
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
+storage.start();
 ```
 
 ### Pattern E — Read-only storage
@@ -247,7 +249,7 @@ Given `storage-directory = data`, `channel-count = 4`:
 
 ```
 data/
-├── lock.sfl                          # exclusive lock file
+├── used.lock                         # exclusive lock file
 ├── PersistenceTypeDictionary.ptd     # type dictionary
 ├── channel_0/
 │   ├── channel_0_1.dat               # data files
@@ -369,8 +371,9 @@ what trade-off it represents), see `references/dev-test-staging-prod.md`.
 
 ## Pitfalls & gotchas
 
-1. **`createEmbeddedStorageManager()` returns a started manager.** You don't need to
-   call `.start()` again. Use `createEmbeddedStorageFoundation()` if you want to delay.
+1. **`createEmbeddedStorageManager()` returns an unstarted manager.** Call `.start()`
+   on the result before use. `EmbeddedStorage.start(...)` is the alternative that
+   returns a started one.
 2. **Default `channel-count = 1`.** Perfectly fine for small apps. Bump to 2-4 only
    when profiling shows an IO bottleneck.
 3. **Data file size limits are 2 GB hard ceilings.** `data-file-minimum-size` and

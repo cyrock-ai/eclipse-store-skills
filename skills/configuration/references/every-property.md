@@ -44,7 +44,7 @@ doesn't seem to take effect".
 | `storage-directory`, `deletion-directory`, `truncation-directory`, `storage-filesystem` | `StorageLiveFileProvider` |
 | `backup-directory`, `backup-filesystem` | `StorageBackupSetup` |
 | `channel-count` | `StorageChannelCountProvider` |
-| `channel-directory-prefix`, `data-file-prefix`, `data-file-suffix`, `transaction-file-prefix`, `transaction-file-suffix`, `type-dictionary-filename`, `rescued-file-suffix`, `lock-filename` | `StorageFileNameProvider` |
+| `channel-directory-prefix`, `data-file-prefix`, `data-file-suffix`, `transaction-file-prefix`, `transaction-file-suffix`, `type-dictionary-file-name`, `rescued-file-suffix`, `lock-file-name` | `StorageFileNameProvider` |
 | `housekeeping-*` | `StorageHousekeepingController` |
 | `entity-cache-threshold`, `entity-cache-timeout` | `StorageEntityCacheEvaluator` |
 | `data-file-*`, `transaction-file-maximum-size` | `StorageDataFileEvaluator` |
