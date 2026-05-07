@@ -8,106 +8,82 @@ Transitive: `storage-embedded`, `storage-embedded-configuration`.
 
 ## Auto-configured beans
 
-| Bean | Type | Provided when |
-|---|---|---|
-| `EmbeddedStorageManager` | storage manager | `org.eclipse.store.auto-create-default-storage=true` (default) |
-| `EmbeddedStorageFoundationFactory` | builds the foundation | always |
-| `EclipseStoreProperties` | `@ConfigurationProperties("org.eclipse.store")` | always |
-| `LockAspect` | AOP lock around `@Read/@Write/@Mutex` | when AOP is on the classpath |
+| Bean | Qualifier | Type | Provided when |
+|---|---|---|---|
+| `EclipseStoreProperties` | `defaultEclipseStore` | `@ConfigurationProperties("org.eclipse.store")` | always |
+| `EmbeddedStorageFoundationFactory` | — | builds foundations from `EclipseStoreProperties` | always (component scan) |
+| `EmbeddedStorageFoundationSupplier<EmbeddedStorageFoundation<?>>` | `defaultEclipseStore` | factory of foundations | `auto-create-default-foundation=true` and `@ConditionalOnMissingBean` |
+| `EmbeddedStorageManager` | `defaultEclipseStore` | storage manager | `auto-create-default-storage=true` and `@ConditionalOnMissingBean` |
+| `LockAspect` | — | AOP lock around `@Read/@Write/@Mutex` | when `org.aspectj.lang.ProceedingJoinPoint` is on the classpath |
+
+The qualifier constant is exposed as
+`DefaultEclipseStoreConfiguration.DEFAULT_QUALIFIER`.
 
 ## AOP annotations
 
 Package: `org.eclipse.store.integrations.spring.boot.types.concurrent`.
 
-| Annotation | Target | Purpose |
+| Annotation | `@Target` | Purpose |
 |---|---|---|
-| `@Read` | method | Read-lock during method. |
-| `@Write` | method | Write-lock during method. |
-| `@Mutex(String name)` | class/method | Named lock scope. Default global if absent. |
+| `@Read` | `METHOD` only | Read-lock during method. |
+| `@Write` | `METHOD` only | Write-lock during method. |
+| `@Mutex(String value)` | `TYPE`, `METHOD` | Named lock scope. The `value` is mandatory (no default). Method-level wins over class-level. |
 
-`LockAspect.java` implements the behaviour — a single `ReentrantReadWriteLock`
-per name (or one global lock without name).
+`LockAspect` keeps a `ConcurrentHashMap<String, ReentrantReadWriteLock>` for named
+locks plus one shared global lock used when no `@Mutex` applies. The aspect is
+non-fair by default. Activation condition: `ProceedingJoinPoint` on the classpath
+(implied by `aspectjweaver`, which is a regular dep of the starter; AOP weaving
+itself still needs `spring-boot-starter-aop` to be on the user's classpath so
+Spring Boot enables `AopAutoConfiguration`).
 
 ## Config class
 
 `org.eclipse.store.integrations.spring.boot.types.configuration.EclipseStoreProperties`
-binds everything under `org.eclipse.store.*`. Key fields:
+binds everything under `org.eclipse.store.*` (`@ConfigurationProperties(prefix
+= "org.eclipse.store")` in `DefaultEclipseStoreConfiguration`). Nested AFS
+config lives on `StorageFilesystem` (and the `aws/`, `azure/`, `googlecloud/`,
+`oraclecloud/`, `redis/`, `sql/` subpackages).
 
-| Field | Property |
-|---|---|
-| `root` | `org.eclipse.store.root` (FQCN) |
-| `storageDirectory` | `org.eclipse.store.storage-directory` |
-| `storageFilesystem` | `org.eclipse.store.storage-filesystem.*` — nested AFS config |
-| `deletionDirectory` | `org.eclipse.store.deletion-directory` |
-| `truncationDirectory` | `org.eclipse.store.truncation-directory` |
-| `backupDirectory` | `org.eclipse.store.backup-directory` |
-| `backupFilesystem` | `org.eclipse.store.backup-filesystem.*` |
-| `channelCount` | `org.eclipse.store.channel-count` |
-| `channelDirectoryPrefix` | `org.eclipse.store.channel-directory-prefix` |
-| `dataFilePrefix` / `dataFileSuffix` | … |
-| `transactionFilePrefix` / `transactionFileSuffix` | … |
-| `typeDictionaryFileName`, `rescuedFileSuffix`, `lockFileName` | naming |
-| `housekeepingInterval`, `housekeepingTimeBudget` | housekeeping |
-| `housekeepingAdaptive`, `housekeepingIncreaseThreshold`, `housekeepingIncreaseAmount`, `housekeepingMaximumTimeBudget` | housekeeping |
-| `entityCacheThreshold`, `entityCacheTimeout` | entity cache |
-| `dataFileMinimumSize`, `dataFileMaximumSize`, `dataFileMinimumUseRatio`, `dataFileCleanupHeadFile` | file compaction |
-| `transactionFileMaximumSize` | transaction log cap |
-
-Nested AWS S3 properties via
-`org.eclipse.store.integrations.spring.boot.types.configuration.aws.S3`:
-
-| Property | Values |
-|---|---|
-| `org.eclipse.store.storage-filesystem.aws.s3.region` | region id |
-| `.endpoint-override` | URL |
-| `.directory-bucket` | boolean |
-| `.credentials.type` | static / env / system-properties / default |
-| `.credentials.access-key-id` | static only |
-| `.credentials.secret-access-key` | static only |
-| `.cache` | boolean |
-
-Similar nesting for Azure (`azure.storage.*`), GCP Firestore, OCI, etc.
+For the full property list — including every cloud backend's keys, defaults,
+and credentials variants — see `references/properties-reference.md`.
 
 ## Startup hooks
 
-`org.eclipse.store.integrations.spring.boot.types.StorageContextInitializer`:
+`org.eclipse.store.integrations.spring.boot.types.initializers.StorageContextInitializer`:
 
 ```java
-@FunctionalInterface
 public interface StorageContextInitializer {
-    void initialize(EmbeddedStorageFoundation<?> foundation);
+    void initialize();
 }
 ```
 
-Declare as a `@Bean`; runs before `EmbeddedStorageManager` is created. Use for:
+Declare as a `@Bean`; the factory looks it up via
+`applicationContext.getBean(StorageContextInitializer.class)` and calls
+`initialize()` **before** the foundation is built. The hook receives no foundation
+reference, so use it only for global side-effects (e.g. installing a custom
+`LazyReferenceManager`, application-side logging).
 
-- Custom type handlers.
-- Eager field evaluators.
-- Constant registration.
-
-Example:
-
-```java
-@Bean
-public StorageContextInitializer init() {
-    return foundation -> foundation.onConnectionFoundation(cf ->
-        cf.registerCustomTypeHandler(new MoneyHandler())
-    );
-}
-```
+For foundation-level configuration, define your own `EmbeddedStorageManager` bean
+— the default manager is `@ConditionalOnMissingBean` so it steps aside, and no
+qualifiers are needed in a single-database app. See
+`references/advanced-foundation-override.md`.
 
 ## REST console
 
-Artifact: `integrations-spring-boot3-console` (Vaadin-based UI).
+Artifact: `integrations-spring-boot3-console` (Vaadin-based UI). Activates simply by
+being on the classpath (the auto-config keys off the artifact, not a master enable
+toggle in the storage starter).
 
-Properties:
+Properties bound to `RestConsoleProperties` (prefix `org.eclipse.store.console`):
 
 | Property | Default | Purpose |
 |---|---|---|
-| `org.eclipse.store.rest.enabled` | `false` | Enable the REST+UI console. |
+| `org.eclipse.store.console.ui.enabled` | `true` | Disable the Vaadin UI explicitly. |
 | `vaadin.url-mapping` | — | Path for the Vaadin frontend. |
 
-The console is read-only.
+The console is read-only — the protocol does not expose writes. The data exposed is
+your application's data, so apply the same auth/network controls as on the
+application itself.
 
 ## Profiles
 
