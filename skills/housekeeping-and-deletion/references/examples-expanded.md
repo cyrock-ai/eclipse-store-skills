@@ -91,23 +91,28 @@ System.out.println("gc=" + gcDone + " cache=" + cacheDone + " file=" + fileDone)
 Any `false` means the operation needs more time; run the same call again in the next
 window.
 
-## Example 6 — Custom file evaluator for a specific directory
+## Example 6 — Custom file evaluator at startup
 
-Don't compact files older than 30 days (archival).
+A custom `StorageDataFileEvaluator` is configured on the foundation **before**
+`.start()` and applies to every housekeeping cycle for the lifetime of the
+manager. Per-call evaluators are not supported.
 
 ```java
 StorageDataFileEvaluator archivalEvaluator =
     StorageDataFileEvaluator.New(
-        1 * 1024 * 1024L,   // min 1 MiB
-        1024 * 1024 * 1024L,  // max 1 GiB — allow big files
-        0.5,                // compact only at <50% payload (relaxed)
-        false               // don't compact the head file
+        1 * 1024 * 1024,        // min 1 MiB (int)
+        1024 * 1024 * 1024,     // max 1 GiB (int) — allow big files
+        0.5,                    // compact only at <50% payload (relaxed)
+        false                   // don't compact the head file
     );
 
-storage.issueFullFileCheck(archivalEvaluator);
+EmbeddedStorageManager storage = EmbeddedStorage.Foundation(
+        Storage.ConfigurationBuilder()
+            .setDataFileEvaluator(archivalEvaluator)
+            .createConfiguration()
+    )
+    .start(root);
 ```
-
-Apply this during archival maintenance; return to defaults on the next scheduled run.
 
 ## Example 7 — Tune housekeeping via config
 
