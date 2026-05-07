@@ -159,7 +159,6 @@ Indexer base classes (in `org.eclipse.store.gigamap.types`):
 | `IndexerByte.Abstract<E>`, `IndexerInteger.Abstract<E>`, `IndexerLong.Abstract<E>` | primitives/wrappers |
 | `IndexerFloat.Abstract<E>`, `IndexerDouble.Abstract<E>` | floats |
 | `IndexerBoolean.Abstract<E>` | boolean |
-| `IndexerEnum.Abstract<E>` | enum types |
 | `IndexerMultiValue.Abstract<E, K>` | collections of K per entity |
 
 Annotations (for simple cases):
@@ -193,7 +192,7 @@ Indexer shapes (all in `org.eclipse.store.gigamap.types`, abstract-class
 pattern — override a single getter):
 
 - **Regular** — one key per entity (`IndexerString`, `IndexerLocalDate`,
-  `IndexerBoolean`, `IndexerEnum`, …).
+  `IndexerBoolean`, …).
 - **Binary** — fixed-width opaque ids (`BinaryIndexerUUID`). Stored as raw
   bytes; cheaper than treating a UUID as a string.
 - **Byte-decomposed** — numerics internally split across byte positions so
@@ -549,7 +548,16 @@ map.update(person, p -> {
 map.store();   // persists entity AND updated indices
 ```
 
-`apply` is the read-only variant: `map.apply(person, p -> doSomethingWith(p))`.
+`apply(E, Function<? super E, R>)` does the same mutation + reindex but returns
+a value from the lambda — use it instead of `update` when the caller needs the
+result:
+
+```java
+map.apply(person, p -> {
+    p.setEmail("new@example.com");
+    return p;
+});
+```
 
 ### Pattern E — Remove
 
@@ -616,7 +624,10 @@ One entity has multiple keys (tags, interests):
 ```java
 public static final IndexerMultiValue<Person, Interest> interests =
     new IndexerMultiValue.Abstract<>() {
-        @Override public Collection<Interest> get(Person p) { return p.interests(); }
+        @Override public Iterable<Interest> indexEntityMultiValue(Person p) {
+            return p.interests();
+        }
+        @Override public Class<Interest> keyType() { return Interest.class; }
     };
 
 map.query(interests.is(Interest.SPORTS));         // contains SPORTS

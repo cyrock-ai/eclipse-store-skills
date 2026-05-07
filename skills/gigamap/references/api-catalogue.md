@@ -26,13 +26,13 @@ registered post-build on `map.index()` (see sections below).
 
 | Method | Notes |
 |---|---|
-| `long add(E e)` | Add an entity. Throws if null or unique constraint violated. |
-| `long[] addAll(E... entities)` | Batch add. |
-| `long[] addAll(Iterable<E>)` | Batch add. |
-| `boolean remove(E e)` | Uses identity index (or compound fallback). |
-| `boolean remove(E e, Indexer... discriminators)` | Explicit lookup. |
-| `void update(E e, Consumer<E> mutator)` | Wrap mutation so indices update. |
-| `void apply(E e, Consumer<E> reader)` | Read-only version. |
+| `long add(E e)` | Add an entity. Throws if null or unique constraint violated. Returns the new entity id. |
+| `long addAll(E... entities)` | Batch add. Returns the last assigned id. |
+| `long addAll(Iterable<? extends E>)` | Batch add. Returns the last assigned id. |
+| `long remove(E e)` | Uses identity index (or compound fallback). Returns the removed entity id. |
+| `long remove(E e, IndexIdentifier<E,?>... discriminators)` | Explicit lookup. `Indexer` is a subtype of `IndexIdentifier`, so passing an indexer works. |
+| `E update(E e, Consumer<? super E> mutator)` | Wrap mutation so indices update. Returns the same entity. |
+| `<R> R apply(E e, Function<? super E, R> logic)` | Lower-level primitive that `update` is built on. Mutates the entity, updates indices, returns the function's result. Throws `ConstraintViolationException` (and removes the entity) if the post-mutation state violates a constraint. |
 | `E get(long entityId)` | By internal id. |
 | `long size()` | Entity count. |
 | `void clear()` | Remove all. |
@@ -55,8 +55,8 @@ registered post-build on `map.index()` (see sections below).
 
 | Method | Notes |
 |---|---|
-| `void store()` | **Use this.** Acquires internal lock and stores only dirty segments. |
-| `void store(StorageConnection)` | Same, with explicit connection. |
+| `long store()` | **Use this.** Acquires internal lock and stores only dirty segments. Returns the storage object id. |
+| `long store(Persister)` | Same, with an explicit persister (e.g. a `StorageConnection`, which is a `Persister`). |
 
 Do not call `storageManager.store(gigaMap)` without external `synchronized(map)`.
 
@@ -94,7 +94,6 @@ All in `org.eclipse.store.gigamap.types`.
 | `IndexerFloat.Abstract<E>` | `float` / `Float` |
 | `IndexerDouble.Abstract<E>` | `double` / `Double` |
 | `IndexerBoolean.Abstract<E>` | `boolean` / `Boolean` |
-| `IndexerEnum.Abstract<E, K extends Enum<K>>` | Enum |
 | `IndexerMultiValue.Abstract<E, K>` | Collection of K per entity |
 
 Pattern:
