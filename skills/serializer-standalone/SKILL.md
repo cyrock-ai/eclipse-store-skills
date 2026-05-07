@@ -10,7 +10,7 @@ description: >
   "include type info in serialized output", "send Java objects over the network",
   or needs a serializer that can replace Java serialization / Jackson for
   Java-to-Java transport.
-version: 0.1.0
+version: 0.1.1
 ---
 
 # Eclipse Serializer — Standalone Use (Without Storage)
@@ -70,22 +70,26 @@ From `org.eclipse.serializer`:
 
 | Symbol | Purpose |
 |---|---|
-| `Serializer.Bytes()` | Default byte-array serializer, no type info. |
-| `Serializer.Bytes(SerializerFoundation<?>)` | With a configured foundation. |
-| `TypedSerializer.Bytes()` / `(foundation)` | Self-describing variant. |
-| `Serializer.ByteBuffer()` / `TypedSerializer.ByteBuffer()` | When you want off-heap / direct buffers. |
+| `Serializer.Bytes()` / `Serializer.Bytes(SerializerFoundation<?>)` | `byte[]` serializer, no type info in the wire format. |
+| `Serializer.Binary()` / `Serializer.Binary(SerializerFoundation<?>)` | Off-heap `Binary` chunks medium (no extra `byte[]` copy). |
+| `TypedSerializer.Bytes()` / `(foundation)` | Self-describing `byte[]` variant. |
+| `TypedSerializer.Binary()` / `(foundation)` | Self-describing `Binary` variant. |
+| `Serializer.New(SerializerFoundation<?>, toMedium, toBinary)` | Generic factory for arbitrary media (e.g. plug a `ByteBuffer` adapter yourself). |
 | `SerializerFoundation.New()` | Start a new foundation. |
+| `SerializerFoundation.New(String typeDictionaryString)` | Bootstrap with an existing type dictionary. |
 | `foundation.registerEntityTypes(Class<?>... classes)` | Pre-register domain classes. |
-| `foundation.registerCustomTypeHandler(handler)` | Custom type handlers (see the sibling skill). |
+| `foundation.registerEntityType(Class<?>)` | Single class, returns a boolean (added vs. already present). |
+| `foundation.registerCustomTypeHandler(handler)` | Custom type handlers (see the sibling skill). Inherited from the underlying `PersistenceFoundation`. |
 | `foundation.setSerializerTypeInfoStrategyCreator(...)` | For `TypedSerializer`: choose how much type info to include per serialize call. |
 
-Instance methods on `Serializer<T>`:
+Instance methods on `Serializer<M>` (which `extends AutoCloseable`):
 
 | Method | Returns | Notes |
 |---|---|---|
-| `T serialize(Object)` | `T` | Serialize one graph. |
-| `<X> X deserialize(T)` | `X` | Deserialize. Caller types the return. |
-| `void close()` | — | Release resources if any. |
+| `M serialize(Object)` | `M` | Serialize one graph. |
+| `<T> T deserialize(M)` | `T` | Deserialize; caller types the return via the assignment. |
+| `String exportTypeDictionary()` | the dictionary text | Useful for diagnosing peer-vs-peer disagreement. |
+| `void close()` | — | Truncates the object registry and closes the persistence manager. Use try-with-resources for one-shot serializers. |
 
 ## Idiomatic patterns
 
@@ -279,9 +283,9 @@ Serializer<byte[]> ser = Serializer.Bytes();
 
 1. **Default `Serializer` is implicit-schema.** If sender and receiver disagree on
    classes, deserialization fails subtly. Register explicitly.
-2. **`Serializer` is not `AutoCloseable` by contract** — check the API; many
-   implementations are cheap and GC-collectible. Call `close()` if available for
-   long-lived ones.
+2. **`Serializer<M>` extends `AutoCloseable`** — wrap one-shot serializers in
+   try-with-resources. `close()` truncates the internal object registry and
+   releases the persistence manager.
 3. **Records work.** Java 16+ `record` types are first-class. No ceremony.
 4. **`Optional` works.** Serializes the presence/absence + contained value.
 5. **Lambdas don't work.** Do not serialize `Runnable` / `Function` etc. They
@@ -329,8 +333,10 @@ than JSON, smaller than Java serialization.
 
 **"Can I stream a huge graph?"** → The API is "serialize one object". For very
 large graphs that don't fit in a single call, split into multiple serialize calls
-with cross-references, or use file-based variants (`FileSerializer` / equivalents
-where available).
+with cross-references, or use the `Binary`-medium factory (`Serializer.Binary()`)
+to consume the off-heap chunks without the extra `byte[]` copy. There is no
+file-stream factory in the standalone serializer — for durable, schema-evolving
+storage use Eclipse Store.
 
 **"Can I use it as a cache value serializer?"** → Yes — that's JCache-over-
 Eclipse-Serializer territory. See `cache-jcache` for the higher-level wrapper.

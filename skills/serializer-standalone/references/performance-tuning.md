@@ -63,19 +63,24 @@ Records are handled as entities. A record with 20 fields serializes slower than
 a class with a compact binary layout. For truly hot paths, write a custom type
 handler.
 
-## Memory: use `ByteBuffer` variants for zero-copy
+## Memory: skip the `byte[]` copy with the `Binary` medium
 
-`Serializer.ByteBuffer()` avoids one `byte[]` allocation when you can consume a
-buffer directly (e.g., passing to NIO channels).
+`Serializer.Binary()` (and `TypedSerializer.Binary()`) returns a `Binary` instead
+of a `byte[]`. `Binary.buffers()` exposes the underlying `ByteBuffer[]` chunks
+directly, avoiding the extra heap allocation that `Bytes()` performs to flatten
+into a single `byte[]`.
 
 ```java
-Serializer<ByteBuffer> ser = Serializer.ByteBuffer();
-ByteBuffer out = ser.serialize(obj);
-channel.write(out);
+Serializer<Binary> ser = Serializer.Binary();
+Binary out = ser.serialize(obj);
+for (ByteBuffer chunk : out.buffers()) {
+    channel.write(chunk);
+}
 ```
 
-Release the buffer appropriately (depends on the implementation — consult
-javadoc).
+For arbitrary destination types, plug a custom adapter via
+`Serializer.New(toMedium, toBinary)` — the standalone serializer ships no
+`ByteBuffer`-typed factory of its own.
 
 ## Benchmark realistically
 
