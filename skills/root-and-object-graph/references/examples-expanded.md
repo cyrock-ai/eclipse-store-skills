@@ -164,7 +164,7 @@ package ops;
 public class MigrateRoot {
     public static void main(String[] args) {
         try (EmbeddedStorageManager s = EmbeddedStorage.start(new AppRootV1(), dir)) {
-            AppRootV1 oldRoot = (AppRootV1) s.customRoot();
+            AppRootV1 oldRoot = s.root();
             AppRootV2 newRoot = translate(oldRoot);
             s.setRoot(newRoot);
             s.storeRoot();
@@ -172,7 +172,7 @@ public class MigrateRoot {
 
         // Next boot uses the new root class.
         try (EmbeddedStorageManager s = EmbeddedStorage.start(new AppRootV2(), dir)) {
-            AppRootV2 root = (AppRootV2) s.root();
+            AppRootV2 root = s.root();
             System.out.println("Migrated: " + root.describe());
         }
     }
