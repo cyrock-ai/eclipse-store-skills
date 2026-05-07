@@ -1,5 +1,11 @@
 # Binary offset API — custom-type-handlers
 
+This page covers the manual `Binary` API used by `AbstractBinaryHandlerCustom<T>`
+subclasses. The declarative `CustomBinaryHandler<T>` style described in
+`SKILL.md` does not need any of this — the framework computes offsets for you.
+Read on only if you are subclassing `AbstractBinaryHandlerCustom` for a layout
+the declarative style cannot express.
+
 ## Layout
 
 Every stored entity begins with a 24-byte header:
@@ -76,7 +82,7 @@ public MyType create(Binary data, PersistenceLoadHandler lh) {
 @Override
 public void updateState(Binary data, MyType inst, PersistenceLoadHandler lh) {
     Object ref = lh.lookupObject(data.read_long(0));
-    XMemory.setObject(inst, XMemory.objectFieldOffset(MyType.class, "someRef"), ref);
+    XMemory.setObject(inst, getClassDeclaredFieldOffset(MyType.class, "someRef"), ref);
 }
 ```
 
@@ -97,7 +103,7 @@ long total = Binary.referenceBinaryLength(1) + Long.BYTES + byteArrayLen;
 data.storeEntityHeader(total, typeId(), oid);
 data.store_long(0, h.apply(inst.header()));
 data.store_long(Binary.objectIdByteLength(), byteArrayLen);
-data.store_bytes(Binary.objectIdByteLength() + Long.BYTES, inst.payload());
+data.store_bytes(inst.payload(), Binary.objectIdByteLength() + Long.BYTES);
 ```
 
 On read, you read the length first, then the payload:

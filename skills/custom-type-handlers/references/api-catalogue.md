@@ -6,118 +6,124 @@
 
 File: `persistence/binary/src/main/java/org/eclipse/serializer/persistence/binary/types/CustomBinaryHandler.java`.
 
-### Constructor helpers (static inner / imports)
+The framework collects `BinaryField<T>` instance fields by reflection (in
+declaration order) and uses them to auto-generate the binary layout.
 
-```java
-import static org.eclipse.serializer.persistence.binary.types.CustomBinaryHandler.CustomField;
-import static org.eclipse.serializer.persistence.binary.types.CustomBinaryHandler.CustomFields;
+### Constructors
 
-super(MyClass.class, CustomFields(
-    CustomField(int.class,    "i"),
-    CustomField(String.class, "s")
-));
-```
+| Constructor | Notes |
+|---|---|
+| `super(Class<T>)` | Single-arg form. Recommended. The framework picks up `BinaryField` instance fields. |
+| `super(Class<T>, PersistenceTypeInstantiator<Binary, T>)` | Optional instantiator that replaces overriding `create`. |
 
-### Methods (override)
+### Methods you commonly override
 
-| Method | Required | Notes |
+| Method | When | Purpose |
 |---|---|---|
-| `void store(Binary data, T inst, long oid, PersistenceStoreHandler<Binary>)` | Yes | Write bytes. Use `data.storeReferences(...)` for pure-reference layouts, or `data.storeEntityHeader(totalBytes, typeId(), oid)` + `data.store_*` for primitives. |
-| `T create(Binary data, PersistenceLoadHandler)` | Yes | Instantiate (empty or with primitives). |
-| `void updateState(Binary data, T inst, PersistenceLoadHandler)` | Yes | Populate reference fields (usually via `XMemory`). |
-| `boolean hasPersistedReferences()` | Yes | True if binary carries refs. |
-| `boolean hasVaryingPersistedLengthInstances()` | Yes | False for fixed-size. |
-| `void iterateLoadableReferences(Binary, PersistenceReferenceLoader)` | If refs | Report each referenced oid. |
+| `T create(Binary, PersistenceLoadHandler)` | Always (or supply an instantiator) | Construct a shell instance — empty, or with primitives read from `BinaryField.read_*`. |
+| `void initializeState(Binary, T, PersistenceLoadHandler)` | Final-field types with references | Read references with `BinaryField.readReference` and set them on the instance (typically via `XMemory.setObject` or `XReflect.copyFields`). |
 
-### Accessors inherited
+### Methods auto-generated — do **not** override
+
+`store`, `updateState`, `iterateLoadableReferences`,
+`hasPersistedReferences`, `hasVaryingPersistedLengthInstances`. They are derived
+from the declared `BinaryField` instances. Override only by dropping down to
+`AbstractBinaryHandlerCustom<T>`.
+
+### `BinaryField<T>` factories (inherited static helpers)
+
+Call these without a class prefix from inside the handler subclass.
+
+| Factory | Use for | Read with |
+|---|---|---|
+| `Field(Class<R>, Getter<T, R>)` | Reference field, read-only | `binaryField.readReference(data, handler)` |
+| `Field(Class<R>, Getter<T, R>, Setter<T, R>)` | Reference field, mutable — framework auto-sets | (auto in `updateState`) |
+| `Field_byte(Getter_byte<T> [, Setter_byte<T>])` | `byte` | `read_byte(data)` |
+| `Field_boolean(Getter_boolean<T> [, Setter_boolean<T>])` | `boolean` | `read_boolean(data)` |
+| `Field_short(Getter_short<T> [, Setter_short<T>])` | `short` | `read_short(data)` |
+| `Field_char(Getter_char<T> [, Setter_char<T>])` | `char` | `read_char(data)` |
+| `Field_int(Getter_int<T> [, Setter_int<T>])` | `int` | `read_int(data)` |
+| `Field_long(Getter_long<T> [, Setter_long<T>])` | `long` | `read_long(data)` |
+| `Field_float(Getter_float<T> [, Setter_float<T>])` | `float` | `read_float(data)` |
+| `Field_double(Getter_double<T> [, Setter_double<T>])` | `double` | `read_double(data)` |
+
+The `Getter` / `Setter` interfaces live in `org.eclipse.serializer.reflect`.
+Method references (`Money::amount`, `Point::x`) and lambdas both work.
+
+### `BinaryField<T>` read methods
+
+`File: persistence/binary/.../BinaryField.java`. Use inside `create` /
+`initializeState`:
+
+| Method | Returns |
+|---|---|
+| `read_byte(Binary)` / `read_boolean(Binary)` | primitive |
+| `read_short(Binary)` / `read_char(Binary)` | primitive |
+| `read_int(Binary)` / `read_long(Binary)` | primitive |
+| `read_float(Binary)` / `read_double(Binary)` | primitive |
+| `readReference(Binary, PersistenceLoadHandler)` | `Object` (resolved instance, or null for stored 0 id) |
+
+### Inherited accessors
 
 | Method | Purpose |
 |---|---|
-| `long typeId()` | The Type ID assigned by Eclipse Store. Pass to `storeEntityHeader` / `storeReferences`. |
+| `long typeId()` | The Type ID assigned by Eclipse Store. |
 | `Class<T> type()` | The class this handler handles. |
+| `static long getClassDeclaredFieldOffset(Class<?>, String)` | Offset for `XMemory.setObject`. Inherited from `AbstractBinaryHandlerCustom`. |
+
+## `AbstractBinaryHandlerCustom<T>` (lower-level alternative)
+
+File: `persistence/binary/src/main/java/org/eclipse/serializer/persistence/binary/types/AbstractBinaryHandlerCustom.java`.
+
+Use directly only when the declarative `CustomBinaryHandler` does not fit (e.g.
+a custom binary list layout). You then implement `store`, `create`,
+`updateState`, `iterateLoadableReferences`, `hasPersistedReferences`, and
+`hasVaryingPersistedLengthInstances` yourself, and declare members via
+`super(MyType.class, CustomFields(CustomField(Type.class, "name"), ...))`. See
+the upstream `OrderBinaryHandler` example.
 
 ## `Binary`
 
 File: `persistence/binary/src/main/java/org/eclipse/serializer/persistence/binary/types/Binary.java`.
 
-### Primitive reads / writes
-
-| Method | Bytes |
-|---|---|
-| `store_byte(offset, byte)` / `read_byte(offset)` | 1 |
-| `store_short(offset, short)` / `read_short(offset)` | 2 |
-| `store_int(offset, int)` / `read_int(offset)` | 4 |
-| `store_long(offset, long)` / `read_long(offset)` | 8 |
-| `store_float(offset, float)` / `read_float(offset)` | 4 |
-| `store_double(offset, double)` / `read_double(offset)` | 8 |
-| `store_boolean(offset, boolean)` / `read_boolean(offset)` | 1 |
-| `store_char(offset, char)` / `read_char(offset)` | 2 |
-
-### Entity header / references
-
-| Method | Purpose |
-|---|---|
-| `storeEntityHeader(long length, long typeId, long objectId)` | Write the 24-byte header required at the start of every entity record. Call this before any `store_*`. |
-| `storeReferences(long typeId, long objectId, long headerOffset, PersistenceStoreHandler<Binary>, Object... refs)` | Convenience: writes header + N references. |
-| `storeReferencesAsList(...)` | Variant for iterables. |
-
-### Layout helpers
-
-| Method | Returns |
-|---|---|
-| `static long objectIdByteLength()` | 8 (long). |
-| `static long referenceBinaryLength(long referenceCount)` | Total bytes for N references. |
-| `static long entityHeaderLength()` | 24. |
-
-### Byte array
-
-| Method | Purpose |
-|---|---|
-| `store_bytes(offset, byte[])` / `read_bytes_...` | Raw byte blocks; handlers typically avoid these, preferring primitive calls. |
-
-## `PersistenceStoreHandler<Binary>`
-
-During `store(...)`, this is how you reserve ids for referenced objects.
-`storeReferences` handles it for you; for manual control:
-
-```java
-long ref = h.apply(instance.something());   // stores if new, returns oid
-data.store_long(offset, ref);
-```
+In the declarative `CustomBinaryHandler` style you rarely need `Binary` directly
+— use `BinaryField.read_*` / `readReference`. The full `Binary` API (manual
+`store_*` writes, `storeEntityHeader`, `storeReferences`) is documented in
+`binary-offset-api.md` and is needed only for `AbstractBinaryHandlerCustom`-style
+handlers.
 
 ## `PersistenceLoadHandler`
 
-Inside `create` / `updateState`:
+Inside `create` / `initializeState`:
 
-- `Object lookupObject(long oid)` — resolve an object id. Returns null for oid 0.
-
-## `PersistenceReferenceLoader`
-
-Passed to `iterateLoadableReferences`. Call:
-
-```java
-it.acceptObjectId(data.read_long(OFFSET_foo));
-```
-
-For every reference in the binary. The loader will then ensure those objects are
-loaded before `updateState` runs.
+- `Object lookupObject(long oid)` — resolve an object id directly. Returns null
+  for oid 0. Usually you use `BinaryField.readReference(data, this)` instead,
+  which calls `lookupObject` internally.
 
 ## `XMemory`
 
 File: `base/src/main/java/org/eclipse/serializer/memory/XMemory.java`.
 
-Unsafe-backed direct field access:
+Unsafe-backed direct field access for populating final / private fields:
 
 | Method | Purpose |
 |---|---|
-| `objectFieldOffset(Class<?>, String fieldName)` | Byte offset of a field within an instance. |
+| `objectFieldOffset(Field)` | Byte offset of a field within an instance. |
 | `setObject(Object target, long fieldOffset, Object value)` | Set a reference field. |
-| `setLong(Object target, long fieldOffset, long value)` | Set a long field. |
-| `setInt`, `setBoolean`, etc. | Similar for all primitives. |
-| `getObject`, `getLong`, … | Read the other direction. |
+| `set_long(Object target, long fieldOffset, long value)` | Set a long field. |
+| `set_int`, `set_boolean`, `set_byte`, `set_short`, `set_char`, `set_float`, `set_double` | Same shape for the other primitives. |
+| `get_long(Object, long)`, `get_int(Object, long)`, … | Read the other direction. |
 
-Use when you need to populate final/private fields during load. Bypasses
-constructors.
+Inside a handler, prefer the inherited helper
+`getClassDeclaredFieldOffset(Class<?>, String)` over `objectFieldOffset(Field)`.
+
+## `XReflect`
+
+File: `base/src/main/java/org/eclipse/serializer/reflect/XReflect.java`.
+
+| Method | Purpose |
+|---|---|
+| `copyFields(from, to)` | Copy all fields from one instance to another. Useful in `initializeState` when the target type can only be initialized via constructor. |
 
 ## `SerializerFoundation` / `EmbeddedStorageFoundation`
 
@@ -134,18 +140,9 @@ EmbeddedStorage.Foundation(config)
 
 Both throw if called after the foundation has been consumed.
 
-## Field declaration summary
+## `BinaryLegacyTypeHandler.AbstractCustom<T>`
 
-```java
-super(
-    MyClass.class,
-    CustomFields(
-        CustomField(Type1.class, "fieldName1"),
-        CustomField(Type2.class, "fieldName2")
-    )
-);
-```
+File: `persistence/binary/src/main/java/org/eclipse/serializer/persistence/binary/types/BinaryLegacyTypeHandler.java`.
 
-- Order matters: declaration order must match binary offset order.
-- The names are the Java field names — used by legacy type mapping for matching.
-- Fields of primitive type use `int.class`, `long.class`, etc.
+Used to read **old** binaries when the layout has changed; pair with a current-
+shape `CustomBinaryHandler`. Detailed in the `legacy-type-mapping` skill.
