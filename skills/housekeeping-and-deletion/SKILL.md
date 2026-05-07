@@ -71,8 +71,8 @@ From `EmbeddedStorageManager` (which implements `StorageConnection`):
 | `boolean issueGarbageCollection(long nanoBudget)` | Time-boxed GC; returns true if complete. |
 | `void issueFullCacheCheck()` / `(StorageEntityCacheEvaluator)` | Full cache eviction scan. |
 | `boolean issueCacheCheck(long nanoBudget)` / `(long, ...)` | Time-boxed cache scan. |
-| `void issueFullFileCheck()` / `(StorageDataFileEvaluator)` | Full file compaction scan. |
-| `boolean issueFileCheck(long nanoBudget)` / `(long, ...)` | Time-boxed file scan. |
+| `void issueFullFileCheck()` | Full file compaction scan. |
+| `boolean issueFileCheck(long nanoBudget)` | Time-boxed file scan. |
 
 And the config properties already covered in `configuration`:
 
@@ -342,8 +342,6 @@ when memory pressure appears. Default is "essentially infinite" for most apps.
 - `references/pitfalls-deep-dive.md` — each pitfall above with reproducer and fix.
 - `references/gc-scheduling-math.md` — how interval + budget interact, worked example
   calculating CPU usage.
-- `references/manual-vs-automatic.md` — when to rely on the daemon vs. when to
-  trigger manually.
 
 ## Upstream sources
 

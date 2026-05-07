@@ -4,7 +4,7 @@
 
 ## Manual housekeeping — `StorageConnection` / `EmbeddedStorageManager`
 
-File: `storage/base/src/main/java/org/eclipse/store/storage/types/StorageConnection.java`.
+File: `storage/storage/src/main/java/org/eclipse/store/storage/types/StorageConnection.java`.
 
 ### Garbage collection
 
@@ -26,10 +26,8 @@ File: `storage/base/src/main/java/org/eclipse/store/storage/types/StorageConnect
 
 | Method | Blocks? | Notes |
 |---|---|---|
-| `void issueFullFileCheck()` | Yes | Full pass using the default `StorageDataFileEvaluator`. |
-| `void issueFullFileCheck(StorageDataFileEvaluator)` | Yes | |
-| `boolean issueFileCheck(long nanoTimeBudget)` | Yes, up to budget | |
-| `boolean issueFileCheck(long nanoTimeBudget, StorageDataFileEvaluator)` | Yes, up to budget | |
+| `void issueFullFileCheck()` | Yes | Full pass using the configured `StorageDataFileEvaluator`. |
+| `boolean issueFileCheck(long nanoTimeBudget)` | Yes, up to budget | Time-boxed; returns true if done. |
 
 All `issue*` calls run on the calling thread via a connection. Don't call from an HTTP
 or message-handler thread you care about blocking.
@@ -38,28 +36,28 @@ or message-handler thread you care about blocking.
 
 ### `StorageEntityCacheEvaluator`
 
-File: `storage/base/.../StorageEntityCacheEvaluator.java`.
+File: `storage/storage/.../StorageEntityCacheEvaluator.java`.
 
 Decides whether a cached entity's data should be evicted. Factory:
 
 ```java
-StorageEntityCacheEvaluator.New(long threshold, long timeoutMillis);
+StorageEntityCacheEvaluator.New(long timeoutMs, long threshold);
 ```
 
-Default is `New(1_000_000_000L, 86_400_000L)` ≈ 24 h.
+Default thresholds: timeout `86_400_000` ms (24 h), threshold `1_000_000_000`.
 
 ### `StorageDataFileEvaluator`
 
-File: `storage/base/.../StorageDataFileEvaluator.java`.
+File: `storage/storage/.../StorageDataFileEvaluator.java`.
 
 Decides whether a data file should be retired (compacted). Factory:
 
 ```java
 StorageDataFileEvaluator.New(
-    long    fileMinimumSize,   // default 1 MiB
-    long    fileMaximumSize,   // default 8 MiB
+    int     fileMinimumSize,   // default 1 MiB
+    int     fileMaximumSize,   // default 8 MiB
     double  minimumUseRatio,   // default 0.75
-    boolean cleanupHeadFile    // default false
+    boolean cleanUpHeadFile    // default false
 );
 ```
 
@@ -69,7 +67,7 @@ hours).
 
 ### `StorageHousekeepingController`
 
-File: `storage/base/.../StorageHousekeepingController.java`.
+File: `storage/storage/.../StorageHousekeepingController.java`.
 
 Supplies interval + budget. Factory:
 
