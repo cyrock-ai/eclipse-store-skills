@@ -22,10 +22,12 @@ Factory:
 Persistence.RefactoringMapping(Paths.get("refactorings.csv"))
 ```
 
-Returns a `PersistenceRefactoringMappingProvider`. Accepts:
+Returns a `PersistenceRefactoringMappingProvider`. Overloads accept:
 
-- A `Path` to a CSV.
-- An in-memory map for programmatic mappings.
+- A `Path` to a CSV file.
+- An inline CSV `String` (optionally with a custom value separator).
+- A pre-parsed `XGettingSequence<KeyValue<String, String>>` for programmatic
+  mappings (build with `X.List(X.KeyValue(old, current), …)`).
 
 ## CSV format
 
@@ -43,27 +45,31 @@ Delimiters: `;` or `\t`. Header row optional (conventional `old` / `current`).
 
 ## `PersistenceLegacyTypeMappingResultor`
 
-Default: `LoggingLegacyTypeMappingResultor` — accepts, logs at INFO.
+Interface with one default method, `createMappingResult(legacyTypeDefinition,
+currentTypeHandler, explicitMappings, explicitNewMembers, matchedMembers)`. The
+default delegates to the static workhorse
+`PersistenceLegacyTypeMappingResultor.createLegacyTypeMappingResult(...)`. Because
+the method is `default` and the interface has no abstract method, you cannot use a
+lambda — supply an anonymous class (or named subtype).
 
-Custom example — fail on low-confidence matches:
+The shipped logging decorator is `LoggingLegacyTypeMappingResultor`; build via
+`LoggingLegacyTypeMappingResultor.New(delegate)`.
 
-```java
-foundation.onConnectionFoundation(f -> f.setLegacyTypeMappingResultor(
-    (analysis, currentType) -> {
-        if (analysis.memberMappings().values().stream()
-                .anyMatch(m -> m.similarity() < 0.5)) {
-            throw new IllegalStateException("Ambiguous legacy mapping for " + currentType);
-        }
-        return LoggingLegacyTypeMappingResultor.Instance.accept(analysis, currentType);
-    }
-));
-```
+For a custom resultor (e.g. fail-the-build on low-confidence matches): implement
+the interface anonymously, delegate the body to
+`PersistenceLegacyTypeMappingResultor.createLegacyTypeMappingResult(...)`, and
+inspect `result.currentToLegacyMembers()` for `Similarity` values below your
+threshold.
 
-## `PersistenceMemberSimilator` (heuristic replacement)
+## `PersistenceMemberMatchingProvider` (heuristic replacement)
 
-Default is Levenshtein distance on field names with type-compatibility filter.
+Default `provideMemberMatchingSimilator(...)` returns `PersistenceMemberSimilator.New(typeSimilarity)`,
+a Levenshtein-on-names plus type-similarity blend.
 
-Custom: implement and pass via `setLegacyMemberMatchingProvider(...)`.
+Custom: extend `PersistenceMemberMatchingProvider.Default` and override
+`provideMemberMatchingSimilator(...)` to return your own
+`Similator<PersistenceTypeDefinitionMember>`. Pass the provider via
+`setLegacyMemberMatchingProvider(...)`.
 
 Typical customizations:
 
@@ -86,8 +92,9 @@ Base class for custom legacy handlers. Subclass contract:
 
 Helper fields used in examples:
 
-- `CustomField(Class<?>, String)` — declare an old field for the super constructor.
-- `Binary.objectIdByteLength()` — 8 (a long).
+- `CustomField(Class<?>, String)` — declare an old field for the super constructor
+  (inherited from `AbstractBinaryHandlerCustom`).
+- `Binary.objectIdByteLength()` — `8`, the byte size of a stored object id.
 - `bytes.read_long(offset)` — read the object id of a referenced object.
 - `handler.lookupObject(id)` — resolve the object from the load handler.
 

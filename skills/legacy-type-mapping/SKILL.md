@@ -11,7 +11,7 @@ description: >
   "BinaryLegacyTypeHandler", "PersistenceLegacyTypeMappingResultor",
   "PersistenceMemberSimilator", or reports a "no suitable type handler" / "legacy type
   mapping required" message at startup.
-version: 0.1.0
+version: 0.1.1
 ---
 
 # Eclipse Store — Legacy Type Mapping (Schema Evolution)
@@ -129,12 +129,14 @@ See `references/examples-expanded.md` for a full handler example.
 
 ### Customize the heuristic
 
-Replace Levenshtein with an annotation-based scheme or domain rules:
+Replace Levenshtein with an annotation-based scheme or domain rules. The setter takes a
+`PersistenceMemberMatchingProvider`; override `provideMemberMatchingSimilator(...)` to
+return your custom `Similator<PersistenceTypeDefinitionMember>`:
 
 ```java
 foundation.onConnectionFoundation(f ->
     f.setLegacyMemberMatchingProvider(
-        myPersistenceMemberSimilatorImpl
+        myMatchingProviderImpl
     )
 );
 ```

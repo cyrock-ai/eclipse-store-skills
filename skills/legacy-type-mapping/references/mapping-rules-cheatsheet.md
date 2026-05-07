@@ -33,7 +33,12 @@ Look up Type IDs in `PersistenceTypeDictionary.ptd`.
 
 ## Delimiters & whitespace
 
-- Delimiter: `;` or `\t`. `,` does **not** work.
+- File-based parsing (`Persistence.RefactoringMapping(Path)`) auto-detects the
+  delimiter; tab and `;` both work. Tabs are preferred (highest XCSV weight).
+- Inline-string parsing — `Persistence.RefactoringMapping(String)` defaults to the
+  XCSV separator (`\t`). To use `;` inline pass it explicitly:
+  `Persistence.RefactoringMapping(csv, ';')`.
+- `,` does **not** work for refactoring CSVs.
 - Leading/trailing whitespace on each cell is trimmed.
 - Blank lines are ignored.
 - Header row is conventional but not required (parser uses column position).

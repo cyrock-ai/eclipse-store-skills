@@ -85,17 +85,31 @@ foundation.setRefactoringMappingProvider(
 classpath resource.
 
 **Fix.** Either extract the CSV to a runtime location, or supply the mapping
-programmatically:
+programmatically. `PersistenceRefactoringMappingProvider.New(...)` accepts an
+`Iterable<KeyValue<String, String>>` (use `X.List(X.KeyValue(old, current), …)`),
+not a `Map`:
 
 ```java
-Map<String, String> explicit = new HashMap<>();
-explicit.put("com.myapp.Customer#customerid", "com.myapp.Customer#pin");
 foundation.setRefactoringMappingProvider(
-    PersistenceRefactoringMappingProvider.New(explicit)
+    PersistenceRefactoringMappingProvider.New(
+        X.List(
+            X.KeyValue("com.myapp.Customer#customerid", "com.myapp.Customer#pin")
+        )
+    )
 );
 ```
 
-(Exact method name may vary; check `Persistence.RefactoringMapping(Map)`.)
+Alternatively, feed an inline CSV string. Note: the single-arg
+`Persistence.RefactoringMapping(String)` parses with the default XCSV separator
+(`\t`). For semicolon-delimited inline content use the explicit-separator overload:
+
+```java
+Persistence.RefactoringMapping(
+    "old;current\n"
+    + "com.myapp.Customer#customerid;com.myapp.Customer#pin\n",
+    ';'
+);
+```
 
 ## 6. Class-level mapping but field names also changed
 

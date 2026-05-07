@@ -147,14 +147,8 @@ what you told it.
 ## Observation-only mode
 
 When planning a refactor, deploy the new code against a copy of production data with
-a custom resultor that logs the proposed mapping but fails the startup. Inspect the
-log, write the CSV, deploy for real.
-
-```java
-foundation.onConnectionFoundation(f -> f.setLegacyTypeMappingResultor(
-    (analysis, currentType) -> {
-        log.info("Proposed mapping: {}", analysis);
-        throw new IllegalStateException("dry-run");
-    }
-));
-```
+a custom `PersistenceLegacyTypeMappingResultor` that logs the proposed mapping (or
+inspects `result.currentToLegacyMembers()`) and throws to abort startup. Inspect the
+log, write the CSV, deploy for real. See `api-catalogue.md` for the interface
+signature — the method is `default` so a lambda will not compile, supply an
+anonymous class.
