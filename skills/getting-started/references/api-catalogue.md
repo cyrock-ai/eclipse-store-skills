@@ -51,14 +51,15 @@ On the foundation:
 
 File: `storage/embedded/src/main/java/org/eclipse/store/storage/embedded/types/EmbeddedStorageManager.java`
 
-Implements `AutoCloseable`, `StorageController`, `StorageConnection`, `PersistenceRootsProvider`.
+Extends `StorageManager`, which extends `StorageController`, `StorageConnection`, `DatabasePart`. `StorageController` extends `AutoCloseable`.
 
 ### Root access
 
 | Method | Purpose |
 |---|---|
 | `Object root()` | Current root. Null if never set. |
-| `Object setRoot(Object)` | Replace the root. Returns the previous root. |
+| `<R> R setRoot(R)` | Replace the in-memory root reference. Returns the passed `newRoot` for fluent chaining. Not persisted until the next `storeRoot()`. |
+| `<R> R ensureRoot(Supplier<R>)` | If `root()` is null, invokes the supplier, calls `setRoot` + `storeRoot`. If a root is already loaded, the supplier is **not** called and storage is not modified. Auto-starts the manager if not running. Returns the resulting root. |
 | `long storeRoot()` | Persist the root object. Returns the storage object id. |
 
 ### General store / load (covered in `storing-data`)
@@ -73,7 +74,7 @@ Implements `AutoCloseable`, `StorageController`, `StorageConnection`, `Persisten
 
 | Method | Purpose |
 |---|---|
-| `boolean start()` | (Re)start managing threads. Already called by `EmbeddedStorage.start(...)`. |
+| `EmbeddedStorageManager start()` | (Re)start managing threads. Already called by `EmbeddedStorage.start(...)`. |
 | `boolean shutdown()` | Stop managing threads, release file locks. |
 | `boolean isRunning()` | Inspect state. |
 | `boolean isAcceptingTasks()` | Whether the manager accepts new operations. |

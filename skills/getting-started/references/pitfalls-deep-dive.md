@@ -66,7 +66,7 @@ EmbeddedStorageManager b = EmbeddedStorage.start(r2, Paths.get("data"));
 
 **Symptom.** Second `.start()` throws, typically a lock file / access violation.
 
-**Root cause.** Eclipse Store places an exclusive lock file (`lock.sfl`) in the storage
+**Root cause.** Eclipse Store places an exclusive lock file (`used.lock`) in the storage
 directory on `start()`. One live manager per directory is the hard rule.
 
 **Fix.** Either use one manager (two application services share it) or two directories.
@@ -170,4 +170,4 @@ re-mounted).
 
 **Fix.** Check for stray JVMs holding the lock; on cloud file systems verify advisory
 locks work. As a last resort and **only if no other JVM is running**, delete
-`lock.sfl` and re-start. Do not script this into normal operations.
+`used.lock` and re-start. Do not script this into normal operations.
