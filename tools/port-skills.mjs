@@ -168,36 +168,26 @@ function emitCline(skills, outDir) {
   }
 }
 
-function emitCopilot(skills, outDir, repoUrl) {
+function emitCopilot(skills, outDir) {
   const slugs = skills.map((s) => s.slug);
-  const parts = [];
-  parts.push('# Eclipse Store — Project Instructions');
-  parts.push('');
-  parts.push('Guidance for building applications with Eclipse Store and Eclipse Serializer. Each section below is a self-contained topic; apply whichever matches the task at hand.');
-  parts.push('');
-  parts.push('## Index');
-  parts.push('');
   for (const skill of skills) {
-    const firstSentence = skill.frontmatter.description.split(/(?<=[.!?])\s/)[0];
-    parts.push(`- **${skill.slug}** — ${firstSentence}`);
+    const { slug, frontmatter, body, references } = skill;
+    const rewritten = rewriteCrossRefs(body, slugs, (s) => `[${s}](${s}.instructions.md)`);
+    const refBlock = references.length
+      ? '\n\n## Bundled reference docs\n\n' +
+        references.map((r) => `- [${r.replace(/\.md$/, '')}](../../docs/eclipse-store/${slug}/${r})`).join('\n') + '\n'
+      : '';
+    const file = [
+      '---',
+      `applyTo: '**'`,
+      `description: ${yamlString(frontmatter.description)}`,
+      '---',
+      '',
+      rewritten.trimStart() + refBlock,
+    ].join('\n');
+    writeFile(join(outDir, '.github', 'instructions', `${slug}.instructions.md`), file);
+    copyReferences(skill, join(outDir, 'docs', 'eclipse-store', slug));
   }
-  parts.push('');
-  for (const skill of skills) {
-    const { slug, body, references } = skill;
-    const rewritten = rewriteCrossRefs(body, slugs, (s) => `the \`${s}\` section below`);
-    parts.push(`## Skill: ${slug}`);
-    parts.push('');
-    parts.push(prepForMonolith(rewritten).trim());
-    if (references.length && repoUrl) {
-      parts.push('');
-      parts.push('**Further reading** (not inlined — see source):');
-      for (const ref of references) {
-        parts.push(`- [${ref.replace(/\.md$/, '')}](${repoUrl}/blob/main/skills/${slug}/references/${ref})`);
-      }
-    }
-    parts.push('');
-  }
-  writeFile(join(outDir, '.github', 'copilot-instructions.md'), parts.join('\n'));
 }
 
 function emitAider(skills, outDir) {
@@ -233,31 +223,28 @@ const TARGETS = {
 
 function printHelp() {
   process.stderr.write(`
-Usage: node tools/port-skills.mjs --target <target> [--out <dir>] [--repo-url <url>]
+Usage: node tools/port-skills.mjs --target <target> [--out <dir>]
 
 Targets:
-  cursor     .cursor/rules/<slug>.mdc   + docs/eclipse-store/<slug>/*
-  windsurf   .windsurf/rules/<slug>.md  + docs/eclipse-store/<slug>/*
-  copilot    .github/copilot-instructions.md (single file; refs link to source)
-  continue   .continue/rules/<slug>.md  + docs/eclipse-store/<slug>/*
+  cursor     .cursor/rules/<slug>.mdc           + docs/eclipse-store/<slug>/*
+  windsurf   .windsurf/rules/<slug>.md          + docs/eclipse-store/<slug>/*
+  copilot    .github/instructions/<slug>.instructions.md + docs/eclipse-store/<slug>/*
+  continue   .continue/rules/<slug>.md          + docs/eclipse-store/<slug>/*
   aider      CONVENTIONS.md (single file, no refs)
-  cline      .clinerules/<slug>.md      + docs/eclipse-store/<slug>/*
+  cline      .clinerules/<slug>.md              + docs/eclipse-store/<slug>/*
   all        emits every target under <out>/<target>/
 
 Options:
   --out <dir>          Output root. Default: dist/<target>/ inside the repo.
-  --repo-url <url>     Base repo URL for Copilot's reference links.
-                       Default: https://github.com/cyrock-ai/eclipse-store-claude
 `);
 }
 
 function parseArgs(argv) {
-  const args = { target: null, out: null, repoUrl: 'https://github.com/cyrock-ai/eclipse-store-claude' };
+  const args = { target: null, out: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--target') args.target = argv[++i];
     else if (a === '--out') args.out = argv[++i];
-    else if (a === '--repo-url') args.repoUrl = argv[++i];
     else if (a === '-h' || a === '--help') { printHelp(); process.exit(0); }
     else { process.stderr.write(`Unknown arg: ${a}\n`); printHelp(); process.exit(1); }
   }
@@ -279,8 +266,7 @@ function main() {
     const outDir = args.out
       ? (args.target === 'all' ? join(args.out, t) : args.out)
       : join(REPO_ROOT, 'dist', t);
-    if (t === 'copilot') TARGETS[t](skills, outDir, args.repoUrl);
-    else TARGETS[t](skills, outDir);
+    TARGETS[t](skills, outDir);
     process.stdout.write(`[${t}] emitted ${skills.length} skills → ${outDir}\n`);
   }
 }

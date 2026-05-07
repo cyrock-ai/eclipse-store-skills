@@ -28,34 +28,37 @@ No `npm install` step — the script is zero-dependency Node.js ESM.
 |------------|-----------------------------------------------------------------|
 | `cursor`   | `.cursor/rules/<slug>.mdc` (Agent Requested via `description`) + `docs/eclipse-store/<slug>/*.md` |
 | `windsurf` | `.windsurf/rules/<slug>.md` (`trigger: model_decision`) + `docs/eclipse-store/<slug>/*.md` |
-| `copilot`  | `.github/copilot-instructions.md` (single file; refs link to source on GitHub) |
+| `copilot`  | `.github/instructions/<slug>.instructions.md` (`applyTo: '**'`) + `docs/eclipse-store/<slug>/*.md` |
 | `continue` | `.continue/rules/<slug>.md` + `docs/eclipse-store/<slug>/*.md`  |
 | `aider`    | `CONVENTIONS.md` (single file; refs dropped)                    |
 | `cline`    | `.clinerules/<slug>.md` + `docs/eclipse-store/<slug>/*.md`      |
 
-`cursor`, `windsurf`, `continue`, and `cline` preserve the lazy-loading pattern
-by emitting reference docs as plain Markdown alongside each rule — the rule
-body links to them and the tool's agent loads them on demand.
+`cursor`, `windsurf`, `continue`, `cline`, and `copilot` emit reference docs
+as plain Markdown alongside each rule. Cursor / Windsurf / Continue / Cline
+load them on demand via description-based skill activation. Copilot has no
+description-based activation: every `.github/instructions/*.instructions.md`
+file with `applyTo: '**'` is appended to every prompt, so the per-skill split
+is for editability and diff hygiene, not selective loading. References under
+`docs/eclipse-store/<slug>/` are linked from each instruction file but are
+not auto-loaded by Copilot — users open them manually when needed.
 
-`copilot` and `aider` inline only the `SKILL.md` bodies (~5k lines total) and
-drop references to stay within each tool's instruction budget. Copilot's
-output links each reference back to the original repo on GitHub so users can
-open them directly when needed.
+`aider` is the one target that genuinely cannot do per-skill files in the
+conventional setup; the generator concatenates every `SKILL.md` into a single
+`CONVENTIONS.md` and drops references.
 
 ### Options
 
 - `--target <name>` — required. One of `cursor`, `windsurf`, `copilot`,
   `continue`, `aider`, `cline`, or `all`.
 - `--out <dir>` — output root. Default: `dist/<target>/` in this repo.
-- `--repo-url <url>` — base repo URL used by `copilot` for reference-doc
-  links. Default: `https://github.com/cyrock-ai/eclipse-store-claude`.
 
 ### How to consume the output
 
 Copy the relevant tree from `dist/<target>/` into the root of a consuming
 project. For Cursor that's the `.cursor/` directory (plus the sibling
-`docs/eclipse-store/` if you want on-demand reference docs). For Copilot it's
-the single `.github/copilot-instructions.md`.
+`docs/eclipse-store/` if you want on-demand reference docs). For Copilot
+it's the `.github/instructions/` directory (and optionally
+`docs/eclipse-store/` so the linked reference docs resolve).
 
 Alternatively, publish `dist/` as a release artifact and have consumers pull
 it down with `curl` / `gh release download`.
