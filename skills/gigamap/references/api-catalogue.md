@@ -27,8 +27,8 @@ registered post-build on `map.index()` (see sections below).
 | Method | Notes |
 |---|---|
 | `long add(E e)` | Add an entity. Throws if null or unique constraint violated. Returns the new entity id. |
-| `long addAll(E... entities)` | Batch add. Returns the count added. |
-| `long addAll(Iterable<? extends E>)` | Batch add. Returns the count added. |
+| `long addAll(E... entities)` | Batch add. Returns the last assigned id. |
+| `long addAll(Iterable<? extends E>)` | Batch add. Returns the last assigned id. |
 | `long remove(E e)` | Uses identity index (or compound fallback). Returns the removed entity id. |
 | `long remove(E e, IndexIdentifier<E,?>... discriminators)` | Explicit lookup. `Indexer` is a subtype of `IndexIdentifier`, so passing an indexer works. |
 | `E update(E e, Consumer<? super E> mutator)` | Wrap mutation so indices update. Returns the same entity. |
