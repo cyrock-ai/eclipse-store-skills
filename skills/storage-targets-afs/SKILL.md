@@ -10,7 +10,7 @@ description: >
   "S3Connector", "ADirectory", "AFS", "caching connector", "alternate storage
   target", or needs help choosing a backend and configuring it with the right AFS
   module.
-version: 0.1.0
+version: 0.1.1
 ---
 
 # Eclipse Store — Storage Targets (AFS)
@@ -55,46 +55,38 @@ Connectors (`S3Connector`, `AzureStorageConnector`, etc.) adapt a backend SDK
 factory that adds an in-memory read-through cache — essential for latency-
 sensitive backends.
 
-## Maven matrix
-
-All AFS modules live under groupId `org.eclipse.store`:
-
-| Backend | Artifact | Notes |
-|---|---|---|
-| Local NIO (default) | (bundled in `storage-embedded`) | Zero extra config. |
-| AWS S3 | `afs-aws-s3` | General & directory buckets. |
-| AWS DynamoDB | `afs-aws-dynamodb` | Blob-in-table. |
-| Azure Storage | `afs-azure-storage` | Blob Storage. |
-| Google Cloud Firestore | `afs-googlecloud-firestore` | Document-per-blob. |
-| Oracle Cloud Object Storage | `afs-oraclecloud-objectstorage` | OCI blob. |
-| Redis | `afs-redis` | Keys map to AFS paths. |
-| Kafka | `afs-kafka` | Append-only log. |
-| SQL (generic) | `afs-sql` | Blob-in-row with JDBC. |
-
-Each requires its backend SDK at runtime (e.g., `software.amazon.awssdk:s3` for
-S3).
-
 ## Core API
 
-From `org.eclipse.serializer.afs.types`:
+Core abstraction in `org.eclipse.serializer.afs.types`:
 
-- `AFileSystem` / `ADirectory` / `AFile` — the abstraction.
-- `NioFileSystem.New()` — local filesystem.
-- `BlobStoreFileSystem.New(connector)` — blob-store backends.
+- `AFileSystem` / `ADirectory` / `AFile`.
 
-Connectors (per backend package):
+Filesystem implementations (in the *store* repo, each in its own package):
 
-- `S3Connector.Caching(S3Client)` / `S3Connector.CachingDirectory(S3Client)`
-- `AzureStorageConnector.Caching(BlobServiceClient)`
-- `GoogleCloudFirestoreConnector.Caching(Firestore)`
-- `OracleCloudObjectStorageConnector.Caching(ObjectStorage)`
-- `RedisConnector.Caching(...)`
-- `KafkaConnector.Caching(...)`
-- `DynamoDbConnector.Caching(DynamoDbClient)`
-- `SqlConnector.Caching(...)`
+- `org.eclipse.store.afs.nio.types.NioFileSystem.New()` — local filesystem.
+- `org.eclipse.store.afs.blobstore.types.BlobStoreFileSystem.New(connector)` —
+  blob-store backends.
 
-**`.Caching(...)`** is almost always what you want. The non-caching variant exists
-for rare cases (transactional audits, tiny workloads).
+## Backends
+
+All AFS modules live under groupId `org.eclipse.store`. Connectors sit in
+`org.eclipse.store.afs.<backend>.types`. Each backend additionally requires its
+own SDK at runtime (e.g. `software.amazon.awssdk:s3`).
+
+| Backend | Artifact | Connector factory | Notes |
+|---|---|---|---|
+| Local NIO (default) | bundled in `storage-embedded` | `NioFileSystem.New()` | Zero extra config. |
+| AWS S3 | `afs-aws-s3` | `S3Connector.Caching(S3Client)` / `S3Connector.CachingDirectory(S3Client)` | General & directory buckets. |
+| AWS DynamoDB | `afs-aws-dynamodb` | `DynamoDbConnector.Caching(DynamoDbClient)` | Blob-in-table. |
+| Azure Storage | `afs-azure-storage` | `AzureStorageConnector.Caching(BlobServiceClient)` | Blob Storage. |
+| Google Cloud Firestore | `afs-googlecloud-firestore` | `GoogleCloudFirestoreConnector.Caching(Firestore)` | Document-per-blob. |
+| Oracle Cloud Object Storage | `afs-oraclecloud-objectstorage` | `OracleCloudObjectStorageConnector.Caching(ObjectStorage)` | OCI blob. |
+| Redis | `afs-redis` | `RedisConnector.Caching(...)` | Keys map to AFS paths. |
+| Kafka | `afs-kafka` | `KafkaConnector.Caching(Properties)` | Append-only log. |
+| SQL | `afs-sql` | `SqlConnector.Caching(SqlProvider)` — wrap a `DataSource` in `SqlProviderPostgres` / `SqlProviderMariaDb` / `SqlProviderOracle` / `SqlProviderSqlite` / `SqlProviderHana` | Blob-in-row with JDBC. |
+
+**`.Caching(...)`** is almost always what you want. The non-caching variant
+exists for rare cases (transactional audits, tiny workloads).
 
 ## Idiomatic patterns
 
@@ -220,8 +212,10 @@ RedisConnector connector = RedisConnector.Caching(jedisPool);
 KafkaConnector connector = KafkaConnector.Caching(kafkaProperties);
 ```
 
-See `references/s3.md`, `references/azure.md`, `references/redis.md`,
-`references/kafka.md` for full setup per backend.
+See `references/s3.md` for the deep S3 walk-through, and
+`references/api-catalogue.md` + `references/examples-expanded.md` for the
+per-backend config keys (Azure / Redis / Kafka / DynamoDB / Firestore / OCI /
+SQL) and runnable code samples.
 
 ## Anti-patterns (do NOT do this)
 
@@ -255,21 +249,6 @@ fragile.
 **Fix.** Use directory buckets (strong consistency) or a dedicated coordination
 primitive if multiple processes need access.
 
-### Anti-pattern 4 — Running on a slow WAN link for live storage
-
-Eclipse Store expects IO latency in the millisecond range. Opening storage
-against an S3 bucket in another region, over a slow VPN, means every
-housekeeping cycle stalls.
-
-**Fix.** Live storage on local or in-region AFS. Use remote AFS only for backup
-or replicas.
-
-### Anti-pattern 5 — Mixing channel count with blob size limits
-
-Default `data-file-maximum-size = 8 MiB`. Some blob stores have per-request size
-limits; 8 MiB works with all, but if you push the storage configuration toward
-64 MiB files, verify the backend.
-
 ## Pitfalls & gotchas
 
 1. **`BlobStoreFileSystem` is eventually consistent on some backends.** S3
@@ -299,6 +278,10 @@ limits; 8 MiB works with all, but if you push the storage configuration toward
 - **`configuration`** — the `storage-filesystem` / `backup-filesystem` complex
   properties are authored here. `configuration` covers generic config; this skill
   covers the AFS-specific sub-properties.
+- **`spring-boot`** — Spring Boot's `org.eclipse.store.storage-filesystem.*` and
+  `…backup-filesystem.*` keys flow into the same AFS targets documented here.
+  Add the matching `afs-*` artifact + the backend SDK; the starter wires the
+  rest from `application.properties`.
 - **`getting-started`** — a custom `ADirectory` is passed to
   `EmbeddedStorage.start(root, directory)` or the Foundation.
 - **`housekeeping-and-deletion`** — compaction writes new files and deletes old
@@ -321,29 +304,36 @@ static. Never code.
 have a directory bucket and application-level coordination. Eclipse Store's
 single-writer rule applies.
 
-**"Can I change backend without losing data?"** → Copy the files. AFS treats
-them as opaque blobs; a plain file-level copy from NIO to S3 (or between two S3
-buckets) works as long as paths are preserved.
+**"Can I change backend without losing data?"** → Use the
+`StorageConverter` tool from `storage-embedded-tools-storage-converter`
+(class `org.eclipse.store.storage.embedded.tools.storage.converter.StorageConverter`).
+Construct it with the source and target `StorageConfiguration` (each pointing
+at a different AFS) and call `start()`. The bundled `MainUtilStorageConverter`
+CLI is NIO-only; for cross-AFS conversion invoke `StorageConverter`
+programmatically. A plain file-level copy of the directory contents also works
+as long as paths are preserved (both ends are opaque blobs to AFS).
 
 **"Is backup to a different AFS a good idea?"** → Yes. Live locally, backup to
 cloud is the typical safe setup.
 
-**"What about S3 versioning / object lock?"** → Eclipse Store writes, updates,
-deletes blobs; S3 versioning captures all versions. Useful as a disaster-
-recovery safety net; costs extra.
+**"What about S3 versioning / object lock?"** → AFS treats one logical file as a
+sequence of S3 objects keyed `<path>.<N>`; each key is written exactly once
+(`BlobStoreConnector.writeData` always picks the next sequential number) and
+deleted as a whole later (compaction, truncation, shutdown). There is therefore
+at most one *write* version per key — versioning does not capture "edits to a
+blob". Where versioning still helps is recovering deleted blobs after a
+mistaken compaction / wipe; treat it as a delete-recovery safety net, not as
+write history. Costs extra.
 
 ## Deeper lookups (on-demand)
 
 - `references/api-catalogue.md` — full AFS interfaces, connector factories per
-  backend.
-- `references/s3.md` — S3 config per credential strategy (static / env / default),
-  general vs. directory buckets, endpoint override.
-- `references/azure.md` — Azure Blob config (connection string, MSI).
-- `references/redis.md` — Redis AFS config, TTL considerations.
-- `references/kafka.md` — Kafka AFS semantics and retention interaction.
-- `references/nio-tuning.md` — filesystem tuning for local SSDs (page cache, fsync
-  behaviour).
-- `references/examples-expanded.md` — five full setups across backends.
+  backend, and the external configuration keys (S3, DynamoDB, Azure, Firestore,
+  OCI, Redis, Kafka, SQL).
+- `references/s3.md` — S3 deep dive: credential strategies (static / env /
+  default), general vs. directory buckets, endpoint override, cost notes.
+- `references/examples-expanded.md` — runnable setups across backends (S3,
+  directory bucket, Azure, Redis, Kafka, DynamoDB, SQL).
 - `references/pitfalls-deep-dive.md` — each pitfall above with reproducer.
 
 ## Upstream sources
