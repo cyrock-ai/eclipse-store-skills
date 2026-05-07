@@ -93,18 +93,11 @@ Async listener — the cache doesn't wait on its completion.
 </dependencies>
 ```
 
-The docs prescribe `JCacheManagerCustomizer` for cache wiring:
+The docs prescribe `JCacheManagerCustomizer` for cache wiring. Put `@EnableCaching` on a `@Configuration` class — `@EnableCaching`'s `@Import` is contractually processed on `@Configuration`-annotated types; on a plain `@Component` it happens to work in modern Spring Boot's lite mode but the path is implementation-dependent.
 
 ```java
-@SpringBootApplication
+@Configuration
 @EnableCaching
-public class MyApplication {
-    public static void main(String[] args) {
-        SpringApplication.run(MyApplication.class, args);
-    }
-}
-
-@Component
 public class CachingSetup implements JCacheManagerCustomizer {
     @Override
     public void customize(CacheManager cacheManager) {
@@ -130,7 +123,8 @@ public class CustomerService {
 For a **storage-backed** cache, depend on the storage bean:
 
 ```java
-@Component
+@Configuration
+@EnableCaching
 @DependsOn("embeddedStorageManager")
 public class CachingSetup implements JCacheManagerCustomizer {
     private final EmbeddedStorageManager storage;

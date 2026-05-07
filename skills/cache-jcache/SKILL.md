@@ -31,7 +31,7 @@ description: >
   "cache-aside", "near-cache", "JMX cache stats",
   "spring.jpa.properties.hibernate.cache.eclipsestore", or asks how
   Eclipse Store compares to Ehcache / Caffeine / Infinispan.
-version: 0.2.0
+version: 0.2.1
 ---
 
 # Eclipse Store — JCache (JSR-107) Cache
@@ -326,14 +326,15 @@ caps memory more aggressively.
 
 Spring auto-detects JCache providers on the classpath. With the `cache`
 artifact, `@EnableCaching` picks up Eclipse Store. The docs prescribe a
-`JCacheManagerCustomizer` bean for non-trivial cache configuration:
+`JCacheManagerCustomizer` bean for non-trivial cache configuration. Put
+`@EnableCaching` on a `@Configuration` class — its `@Import` is
+contractually processed on `@Configuration`-annotated types; on a plain
+`@Component` it works in modern Spring Boot's lite mode but the path is
+implementation-dependent.
 
 ```java
-@SpringBootApplication
+@Configuration
 @EnableCaching
-public class MyApplication { ... }
-
-@Component
 public class CachingSetup implements JCacheManagerCustomizer {
     @Override
     public void customize(CacheManager cacheManager) {
@@ -357,7 +358,8 @@ For a **storage-backed** cache, depend on the storage bean and use
 `CacheConfiguration.Builder(...)` inside `customize`:
 
 ```java
-@Component
+@Configuration
+@EnableCaching
 @DependsOn("embeddedStorageManager")          // (1)
 public class CachingSetup implements JCacheManagerCustomizer {
     private final EmbeddedStorageManager storage;
