@@ -80,33 +80,46 @@ Async listener — the cache doesn't wait on its completion.
 `pom.xml`:
 
 ```xml
-<dependencies>
-  <dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-cache</artifactId>
-  </dependency>
-  <dependency>
-    <groupId>org.eclipse.store</groupId>
-    <artifactId>cache</artifactId>
-    <version>${eclipse-store.version}</version>
-  </dependency>
-</dependencies>
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-cache</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.eclipse.store</groupId>
+  <artifactId>cache</artifactId>
+  <version>${eclipse-store.version}</version>
+</dependency>
 ```
 
-The docs prescribe `JCacheManagerCustomizer` for cache wiring. Put `@EnableCaching` on a `@Configuration` class — `@EnableCaching`'s `@Import` is contractually processed on `@Configuration`-annotated types; on a plain `@Component` it happens to work in modern Spring Boot's lite mode but the path is implementation-dependent.
+Wire caches through a `JCacheManagerCustomizer` bean. Constructor-inject
+the `EmbeddedStorageManager` so storage-backed caches always see an
+initialized manager (Pitfall 8):
 
 ```java
 @Configuration
 @EnableCaching
 public class CachingSetup implements JCacheManagerCustomizer {
+    private final EmbeddedStorageManager storage;
+
+    public CachingSetup(EmbeddedStorageManager storage) {
+        this.storage = storage;
+    }
+
     @Override
     public void customize(CacheManager cacheManager) {
-        cacheManager.createCache("customers", new MutableConfiguration<>()
-            .setTypes(String.class, Customer.class)
+        // In-memory
+        cacheManager.createCache("sessions", new MutableConfiguration<>()
+            .setTypes(String.class, Session.class)
             .setStoreByValue(false)
             .setExpiryPolicyFactory(CreatedExpiryPolicy.factoryOf(
                 new Duration(TimeUnit.MINUTES, 30)))
             .setStatisticsEnabled(true));
+
+        // Storage-backed — entries persist across restarts
+        cacheManager.createCache("customers", CacheConfiguration
+            .Builder(String.class, Customer.class, "customers", storage)
+            .expiryPolicyFactory(CreatedExpiryPolicy.factoryOf(Duration.ONE_HOUR))
+            .build());
     }
 }
 
@@ -118,32 +131,6 @@ public class CustomerService {
     @CacheEvict("customers")
     public void invalidate(String id) {}
 }
-```
-
-For a **storage-backed** cache, depend on the storage bean:
-
-```java
-@Configuration
-@EnableCaching
-@DependsOn("embeddedStorageManager")
-public class CachingSetup implements JCacheManagerCustomizer {
-    private final EmbeddedStorageManager storage;
-    public CachingSetup(EmbeddedStorageManager storage) { this.storage = storage; }
-
-    @Override
-    public void customize(CacheManager cacheManager) {
-        cacheManager.createCache("customers", CacheConfiguration
-            .Builder(String.class, Customer.class, "customers", storage)
-            .expiryPolicyFactory(CreatedExpiryPolicy.factoryOf(Duration.ONE_HOUR))
-            .build());
-    }
-}
-```
-
-If Caffeine / Ehcache is also on the classpath, pin the provider with:
-
-```properties
-spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider
 ```
 
 ## Example 5 — Hibernate second-level cache
@@ -158,16 +145,7 @@ spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider
 </dependency>
 ```
 
-Plain Hibernate (`hibernate.properties` / `persistence.xml`):
-
-```properties
-hibernate.cache.use_second_level_cache=true
-hibernate.cache.use_query_cache=true
-hibernate.cache.region.factory_class=org.eclipse.store.cache.hibernate.types.CacheRegionFactory
-```
-
-Spring Boot (`application.properties`) — verbatim from
-`use-cases/hibernate-second-level-cache.adoc`:
+Configuration (`application.properties`):
 
 ```properties
 spring.jpa.properties.hibernate.cache.eclipsestore.missing_cache_strategy=create
@@ -176,6 +154,9 @@ spring.jpa.properties.hibernate.cache.use_query_cache=true
 spring.jpa.properties.hibernate.cache.use_second_level_cache=true
 spring.jpa.properties.javax.persistence.sharedCache.mode=ALL
 ```
+
+For plain Hibernate (`hibernate.properties` / `persistence.xml`), drop the
+`spring.jpa.properties.` prefix.
 
 Entities:
 
@@ -202,7 +183,11 @@ Hibernate's standard region settings.
 
 ## Example 6 — Measuring effectiveness
 
+Statistics are off by default. Enable on the configuration, then read via
+`Cache.unwrap(...)`:
+
 ```java
+import javax.cache.management.CacheMXBean;
 import javax.cache.management.CacheStatisticsMXBean;
 
 cfg.setStatisticsEnabled(true);                                 // (1)
@@ -212,42 +197,16 @@ CacheStatisticsMXBean stats = cache.unwrap(CacheStatisticsMXBean.class);
 System.out.println("hits:   " + stats.getCacheHits());
 System.out.println("misses: " + stats.getCacheMisses());
 System.out.println("rate:   " + stats.getCacheHitPercentage() + "%");
+
+CacheMXBean cfgMBean = cache.unwrap(CacheMXBean.class);         // (2)
 ```
 
 (1) Or `.enableStatistics()` on the Eclipse Store builder. Off by default.
+(2) The same MBeans are also registered with the platform `MBeanServer`
+under `javax.cache:type=CacheStatistics,CacheManager=…,Cache=…` for
+external monitoring tools (JConsole, VisualVM, Prometheus exporters).
 
-## Example 7 — Near-cache topology (application-level)
-
-JCache itself does not implement near-cache; here is the application-level
-pattern — fast local cache in front of a durable storage-backed cache:
-
-```java
-// Local: pure in-memory, 10k entries, short TTL
-Cache<String, Customer> near = cm.createCache("customers-near",
-    new MutableConfiguration<String, Customer>()
-        .setTypes(String.class, Customer.class)
-        .setStoreByValue(false)
-        .setExpiryPolicyFactory(CreatedExpiryPolicy.factoryOf(
-            new Duration(TimeUnit.SECONDS, 30))));
-
-// Durable: storage-backed
-Cache<String, Customer> durable = cm.createCache("customers-durable",
-    CacheConfiguration.Builder(String.class, Customer.class, "customers-durable", storage)
-        .build());
-
-public Customer find(String id) {
-    Customer c = near.get(id);
-    if (c != null) return c;
-    c = durable.get(id);
-    if (c != null) near.put(id, c);
-    return c;
-}
-```
-
-Note: keep the two layers' invalidation in sync — when you evict from
-`durable`, evict from `near` as well.
-
-## Example 8 — Read-through to a database with `CacheLoader`
+## Example 7 — Read-through to a database with `CacheLoader`
 
 A storage-backed cache is already read- and write-through *to its storage*.
 For read-through to a **different** system of record (a JDBC database
@@ -295,7 +254,7 @@ CacheConfiguration<String, Customer> cfg = CacheConfiguration
 Mirror with `CacheWriter` + `cacheWriterFactory(...)` + `writeThrough(true)`
 to write-through inserts/updates back to the database.
 
-## Example 9 — Loading config from `eclipsestore-cache.properties`
+## Example 8 — Loading config from `eclipsestore-cache.properties`
 
 `cache-config.properties` (on the classpath):
 

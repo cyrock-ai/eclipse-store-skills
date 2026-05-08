@@ -93,14 +93,32 @@ a fresh manager per test.
 
 ## 7. Statistics silently off
 
-**Reproducer.**
+**Reproducer.** Configuration left at the JCache default (statistics
+disabled); the MBean is still wired and `unwrap` returns it, but every
+counter stays at zero.
 
 ```java
-cache.unwrap(CacheStatisticsMXBean.class).getCacheHits();   // always 0
+// cfg.setStatisticsEnabled(...) never called → false by default
+cache.put("a", customer);
+cache.get("a");
+
+CacheStatisticsMXBean stats = cache.unwrap(CacheStatisticsMXBean.class);
+stats.getCacheHits();    // 0 — counters never incremented
 ```
 
-**Fix.** `cfg.setStatisticsEnabled(true)` (JCache) or `.enableStatistics()`
-(Eclipse Store builder) at build time.
+**Fix.** Enable on the configuration at build time, then read via `unwrap`:
+
+```java
+cfg.setStatisticsEnabled(true);          // MutableConfiguration
+// ... or
+.enableStatistics()                      // Eclipse Store builder
+
+long hits = cache.unwrap(CacheStatisticsMXBean.class).getCacheHits();
+```
+
+The same MBeans are also registered on the platform `MBeanServer` under
+`javax.cache:type=CacheStatistics,CacheManager=…,Cache=…` for external
+monitoring tools.
 
 ## 8. `JCacheManagerCustomizer` runs before `EmbeddedStorageManager` is initialized
 
@@ -123,20 +141,21 @@ public class CachingSetup implements JCacheManagerCustomizer {
 its cache auto-configuration, which can be earlier in the bean graph than
 the storage bean's initialization.
 
-**Fix.** Either constructor-inject the storage manager (Spring will then
-resolve the dependency before instantiating the customizer):
+**Fix.** Constructor-inject the storage manager — Spring resolves the
+dependency before instantiating the customizer, so `storage` is non-null
+by the time `customize` runs:
 
 ```java
-@Component
-@DependsOn("embeddedStorageManager")
+@Configuration
 public class CachingSetup implements JCacheManagerCustomizer {
     private final EmbeddedStorageManager storage;
-    public CachingSetup(EmbeddedStorageManager storage) { this.storage = storage; }
+
+    public CachingSetup(EmbeddedStorageManager storage) {
+        this.storage = storage;
+    }
     // ...
 }
 ```
-
-…or initialize the storage inside the customizer itself.
 
 ## 9. Storage-backed cache silently replaced by Spring's default in-memory cache
 
@@ -169,25 +188,7 @@ spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider
 Pairs naturally with the `JCacheManagerCustomizer` pattern — the
 customizer wires the cache, the property pins the provider.
 
-## 11. Cache-to-cache copy errors on `storeByValue(true)`
-
-Moving an entry between caches with `storeByValue(true)` copies — mutations
-on the destination don't affect the source and vice versa. May or may not
-be what you want.
-
-**Fix.** Match `storeByValue` semantics across related caches; or
-`storeByReference()` if you want shared state.
-
-## 12. `getCache(name)` returns null after `createCache` with explicit types
-
-```java
-cm.getCache("jCache");                              // untyped — may be null
-cm.getCache("jCache", Integer.class, String.class); // correct
-```
-
-JCache's quirk: typed-create requires typed-get.
-
-## 13. Hibernate region factory mismatch
+## 11. Hibernate region factory mismatch
 
 Wrong or missing `hibernate.cache.region.factory_class` → L2 doesn't use
 Eclipse Store; silently falls back to whatever Hibernate picks.
