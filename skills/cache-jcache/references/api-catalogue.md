@@ -101,7 +101,7 @@ Extends `javax.cache.Cache<K,V>` and `Unwrappable`. Adds:
 | `getConfiguration()` | Returns `CacheConfiguration<K,V>`. |
 | `size()` | Current entry count. |
 | `putSilent(K, V)` | Put without firing listeners. |
-| `unwrap(Class<T>)` | Unwrap to provider-specific type (e.g. `CacheStatisticsMXBean`). |
+| `unwrap(Class<T>)` | Unwrap to `CacheStatisticsMXBean` / `CacheMXBean` (configuration MBean), or to `Cache.Default` and supertypes. Throws `IllegalArgumentException` for any other class. |
 
 ### `CacheManager` (Eclipse Store)
 
@@ -231,25 +231,10 @@ Per-region expiry uses Hibernate's standard region settings.
 
 ## Spring integration
 
-```xml
-<dependency>
-  <groupId>org.springframework.boot</groupId>
-  <artifactId>spring-boot-starter-cache</artifactId>
-</dependency>
-```
-
-The docs prescribe a `JCacheManagerCustomizer` bean for cache wiring (see
+Wire caches via a `JCacheManagerCustomizer` bean (per
 `use-cases/spring-cache.adoc`); `@EnableCaching` + `@Cacheable` work as
-usual on top.
-
-If multiple JCache providers are on the classpath, pin Eclipse Store with:
-
-```properties
-spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider
-```
-
-This is generic Spring Boot configuration — not specifically called out in
-the Eclipse Store docs, but valid.
+usual on top. If multiple JCache providers are on the classpath, pin
+Eclipse Store with `spring.cache.jcache.provider=org.eclipse.store.cache.types.CachingProvider`.
 
 ## Interactions with `EmbeddedStorageManager`
 
