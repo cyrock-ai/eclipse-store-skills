@@ -77,6 +77,20 @@ Async listener — the cache doesn't wait on its completion.
 
 ## Example 4 — Spring Boot + Eclipse Store JCache
 
+`pom.xml`:
+
+```xml
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-cache</artifactId>
+</dependency>
+<dependency>
+  <groupId>org.eclipse.store</groupId>
+  <artifactId>cache</artifactId>
+  <version>${eclipse-store.version}</version>
+</dependency>
+```
+
 Wire caches through a `JCacheManagerCustomizer` bean. Constructor-inject
 the `EmbeddedStorageManager` so storage-backed caches always see an
 initialized manager (Pitfall 8):
