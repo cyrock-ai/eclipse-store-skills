@@ -182,8 +182,10 @@ serial — striping helps only when the partition is real. The number of
 stripes (`64` here) is a hash-target — too few and stripes contend; too many
 and memory grows for no benefit.
 
-The `read` / `write` calls returning a value (`Supplier`) and side-effecting
-(`Runnable`) follow the same pattern as `LockedExecutor`.
+The `read(Object mutex, …)` / `write(Object mutex, …)` overloads take
+`Action` (side-effecting) or `Producer<R>` (value-returning) — same shape
+as `LockedExecutor`, with an extra `mutex` argument that picks the stripe
+via `abs(mutex.hashCode()) % stripeCount`.
 
 ## 6. Spring Boot — `@Read` / `@Write` / `@Mutex`
 

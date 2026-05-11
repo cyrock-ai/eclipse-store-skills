@@ -13,8 +13,8 @@ against Eclipse Serializer's own functional interfaces (not `java.util.function.
 
 | Type | Shape | Purpose |
 |---|---|---|
-| `org.eclipse.serializer.functional.Action` | `void execute() throws Throwable` | Side-effecting (write or void read). `Runnable`-shaped, with a checked-exception throws clause. |
-| `org.eclipse.serializer.functional.Producer<R>` | `R produce()` | Value-returning (read). `Supplier`-shaped. |
+| `org.eclipse.serializer.functional.Action` | `void execute()` | Side-effecting (write or void read). `Runnable`-shaped. **Does not declare `throws`** — wrap any checked exception inside the lambda as unchecked. |
+| `org.eclipse.serializer.functional.Producer<R>` | `R produce()` | Value-returning (read). `Supplier`-shaped. **Does not declare `throws`** — same as `Action`. |
 
 The skill's lambdas (`() -> { … }`, `() -> root.customers().get(id)`) are
 inferred against these types — they look identical to JDK lambdas at the call
@@ -142,7 +142,7 @@ per-aggregate patterns.
 |---|---|
 | Storage channels (`channel-count`) | Internal I/O threads. They parallelise the library's reads/writes but do not synchronise application threads. |
 | The lock file (`lock-file-name`, `Storage Lock File`) | Process-level — prevents two JVMs from opening the same storage. Has no effect on threads inside a single JVM. |
-| `EmbeddedStorageManager.store(...)` | Atomic for *durability* (all-or-nothing on disk), not *isolation* (the in-memory graph it traverses is unprotected). |
+| `EmbeddedStorageManager.store(...)` | Atomic for *durability* (all-or-nothing on disk) **per call**. Not *isolation* (the in-memory graph it traverses is unprotected). **Two consecutive `store()` calls are not atomic together** — use `storeAll(Object...)` / `storeAll(Iterable<?>)` for multi-object durable atomicity. |
 | `Threaded<E>` / `ThreadedInstantiating<E>` | Thread-local-context utilities in `org.eclipse.serializer.concurrency`. Not application-level locking primitives — used internally for per-thread state. |
 | `ThreadSafe` / `Synchronized` (marker interfaces) | Documentation markers. They do not enforce anything. |
 
