@@ -382,21 +382,11 @@ Computed mode does not have this issue — its update path replaces the
 
 ## 21. `storageManager.store(gigaMap)` with a vector index
 
-**Reproducer.**
-
-```java
-storageManager.store(map);   // map has a registered VectorIndex
-```
-
-**Symptom.** Same as Pitfall 1 — `BinaryPersistenceException: Inconsistent
-element count`, but vector indices are now part of the structure being
-serialized.
-
-**Fix.** Same as Pitfall 1: `map.store()`. The vector index's binary
-handlers integrate with GigaMap's incremental store pipeline; only changed
-indices are written. **Do not** bypass it.
+Same root cause and fix as Pitfall 1 — vector indices are part of the
+structure being serialized, so `map.store()` (not `storageManager.store(map)`)
+is required. The vector index's binary handlers integrate with GigaMap's
+incremental store pipeline; only changed indices are written.
 
 To force a vector index's on-disk file to flush separately, call
-`vectorIndex.persistToDisk()` — that's a different mechanism (writing
-`{name}.graph` + `{name}.meta`), independent of the EclipseStore
-`storage/` directory.
+`vectorIndex.persistToDisk()` — different mechanism (writes `{name}.graph`
++ `{name}.meta`), independent of the EclipseStore `storage/` directory.

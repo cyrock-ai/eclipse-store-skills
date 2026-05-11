@@ -223,33 +223,16 @@ from collection" — GigaMap owns the collection semantics.
 
 ## Example 9 — Vector search: end-to-end with embedded mode
 
-A document with its embedding stored on the entity (e.g. you batch-computed
+Document with its embedding stored on the entity (e.g. you batch-computed
 vectors at ingest time). Embedded mode avoids duplicate storage.
 
 ```java
-// Doc.java
-package app;
-
 public record Doc(String id, String title, String text, float[] embedding) {}
-```
-
-```java
-// DocVectorizer.java
-package app;
-
-import org.eclipse.store.gigamap.jvector.Vectorizer;
 
 public class DocVectorizer extends Vectorizer<Doc> {
     @Override public float[] vectorize(Doc d) { return d.embedding(); }
     @Override public boolean isEmbedded()     { return true; }
 }
-```
-
-```java
-// DocIndices.java
-package app;
-
-import org.eclipse.store.gigamap.types.IndexerString;
 
 public final class DocIndices {
     public static final IndexerString<Doc> id = new IndexerString.Abstract<>() {
@@ -260,13 +243,6 @@ public final class DocIndices {
     };
     private DocIndices() {}
 }
-```
-
-```java
-// AppRoot.java
-package app;
-
-import org.eclipse.store.gigamap.types.GigaMap;
 
 public class AppRoot {
     private final GigaMap<Doc> docs = GigaMap.<Doc>Builder()
@@ -275,60 +251,40 @@ public class AppRoot {
         .build();
     public GigaMap<Doc> docs() { return docs; }
 }
-```
 
-```java
-// Main.java
-package app;
+public static void main(String[] args) {
+    try (EmbeddedStorageManager storage =
+             EmbeddedStorage.start(new AppRoot(), Paths.get("data"))) {
 
-import java.nio.file.Paths;
+        GigaMap<Doc> docs = ((AppRoot) storage.root()).docs();
 
-import org.eclipse.store.gigamap.jvector.VectorIndex;
-import org.eclipse.store.gigamap.jvector.VectorIndexConfiguration;
-import org.eclipse.store.gigamap.jvector.VectorIndices;
-import org.eclipse.store.gigamap.jvector.VectorSearchResult;
-import org.eclipse.store.gigamap.jvector.VectorSimilarityFunction;
-import org.eclipse.store.storage.embedded.types.EmbeddedStorage;
-import org.eclipse.store.storage.embedded.types.EmbeddedStorageManager;
+        // Restart-safe — register() returns null if the category is already attached.
+        VectorIndices<Doc> indices = docs.index().get(VectorIndices.class);
+        if (indices == null) indices = docs.index().register(VectorIndices.Category());
 
-public class Main {
-    public static void main(String[] args) {
-        try (EmbeddedStorageManager storage =
-                 EmbeddedStorage.start(new AppRoot(), Paths.get("data"))) {
+        VectorIndexConfiguration cfg = VectorIndexConfiguration
+            .forMediumDataset(768);
 
-            AppRoot root = (AppRoot) storage.root();
-            GigaMap<Doc> docs = root.docs();
+        VectorIndex<Doc> embeddings = indices.ensure("embeddings", cfg, new DocVectorizer());
 
-            // ensure() is idempotent — safe across restarts.
-            VectorIndices<Doc> vectorIndices =
-                docs.index().register(VectorIndices.Category());
-
-            VectorIndexConfiguration cfg = VectorIndexConfiguration.builder()
-                .dimension(768)
-                .similarityFunction(VectorSimilarityFunction.COSINE)
-                .build();
-
-            VectorIndex<Doc> embeddings =
-                vectorIndices.ensure("embeddings", cfg, new DocVectorizer());
-
-            if (docs.size() == 0) {
-                docs.add(new Doc("d1", "Eclipse Store overview", "...", embed("...")));
-                docs.add(new Doc("d2", "JVector internals",      "...", embed("...")));
-                docs.add(new Doc("d3", "Cooking pasta",           "...", embed("...")));
-                docs.store();
-            }
-
-            float[] queryVec = embed("How does the persistent vector index work?");
-            VectorSearchResult<Doc> top = embeddings.search(queryVec, 5);
-
-            for (var entry : top) {
-                System.out.printf("%.3f  %s%n", entry.score(), entry.entity().title());
-            }
+        if (docs.size() == 0) {
+            docs.add(new Doc("d1", "Eclipse Store overview", "...", embed("...")));
+            docs.add(new Doc("d2", "JVector internals",      "...", embed("...")));
+            docs.add(new Doc("d3", "Cooking pasta",          "...", embed("...")));
+            docs.store();
         }
-    }
 
-    static float[] embed(String text) { /* call your embedding model */ }
+        VectorSearchResult<Doc> top =
+            embeddings.search(embed("How does the persistent vector index work?"), 5);
+        for (var entry : top) {
+            System.out.printf("%.3f  %s%n", entry.score(), entry.entity().title());
+        }
+
+        try { embeddings.close(); } catch (IOException ignore) {}   // close before storage.close()
+    }
 }
+
+static float[] embed(String text) { /* call your embedding model */ }
 ```
 
 Run with `--add-modules jdk.incubator.vector` for SIMD acceleration.

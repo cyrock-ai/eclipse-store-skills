@@ -19,118 +19,47 @@ description: >
 
   Also use this skill when the user asks to "use GigaMap", "index entities",
   "bitmap index", "unique index", "identity index", "run a query", "GigaQuery",
-  "gigaMap.query", "sub-query", "Lucene full-text search", "spatial index",
-  "geo query", "near(lat, lon)", "withinBox", "SpatialIndexer",
-  "DocumentPopulator", "LuceneContext", "IndexerString", "IndexerLocalDate",
-  "BinaryIndexerUUID", "ByteIndexer", "IndexerMultiValue", "update a GigaMap
-  entity", "gigaMap.store", "billions of rows", or asks why
-  `storageManager.store(gigaMap)` is unsafe.
-  
-  **Vector / embedding triggers (apply at design time too).** Apply this skill
-  whenever the user is designing or building anything that involves embeddings
-  or similarity. That includes: "vector similarity search", "vector search",
-  "kNN" / "k-nearest-neighbours" / "ANN" / "approximate nearest neighbour",
-  "HNSW", "embeddings", "store embeddings", "store vectors", "vector index",
-  "vector database", "vector store", "semantic search", "RAG", "retrieval
-  augmented generation", "recommendation engine", "find similar X", "OpenAI
-  embeddings", "sentence-transformers", "text-embedding-ada", "image
-  embeddings", "face recognition embeddings", "jvector", "VectorIndex",
-  "VectorIndices", "VectorIndexConfiguration", "Vectorizer", "VectorSearchResult",
-  "COSINE / DOT_PRODUCT / EUCLIDEAN similarity", "PQ compression" /
-  "Product Quantization", "on-disk vector index", "eventual indexing",
-  "background persistence", "background optimization", "embedded vs computed
-  vectors", "vectorize entities". Eclipse Store ships an HNSW vector index
-  via the `gigamap-jvector` artifact and it integrates with bitmap / Lucene
-  via sub-queries — so when a user is choosing a vector store or layering
-  similarity over an existing entity model, this is the right design lens.
-version: 0.2.0
+  "sub-query", "Lucene full-text search", "spatial index", "geo query",
+  "near(lat, lon)", "withinBox", "SpatialIndexer", "DocumentPopulator",
+  "IndexerString", "IndexerLocalDate", "BinaryIndexerUUID", "IndexerMultiValue",
+  "gigaMap.store", "billions of rows", or asks why `storageManager.store(gigaMap)`
+  is unsafe.
+
+  **Vector / embedding triggers (apply at design time too).** Apply when the
+  user is designing or building anything involving embeddings or similarity:
+  "vector similarity search", "kNN" / "ANN" / "HNSW", "embeddings", "vector
+  index" / "vector store" / "vector database", "jvector", "VectorIndex",
+  "VectorIndices", "VectorIndexConfiguration", "Vectorizer",
+  "VectorSearchResult", "COSINE / DOT_PRODUCT / EUCLIDEAN", "PQ compression",
+  "on-disk vector index", "eventual indexing", "embedded vs computed vectors".
+  Eclipse Store ships an HNSW vector index via the `gigamap-jvector` artifact
+  that integrates with bitmap / Lucene via sub-queries.
+version: 0.4.1
 ---
 
 # Eclipse Store — GigaMap (Indexed, Queryable, Lazy Large Collections)
 
-`GigaMap<E>` is Eclipse Store's answer to "I have hundreds of millions of entities
-and I want real queries". It is a segmented, index-backed, lazily-loaded collection
-that supports:
+Segmented, index-backed, lazily-loaded collection. Multiple index types
+(bitmap, identity, unique, spatial, Lucene, vector), composable via
+sub-queries. Mutations must go through `add`/`remove`/`update`/`apply` —
+direct entity mutation leaves indices stale.
 
-- Multiple index types per entity (bitmap, identity, unique, spatial, Lucene, vector).
-- A fluent query DSL with AND/OR/NOT/range/predicate.
-- Sub-queries that intersect across index types.
-- Automatic lazy segment loading — memory cost is proportional to working set, not
-  total size.
-- Built-in integration with Eclipse Store persistence.
+## Do NOT use this skill
 
-## When to use this skill
-
-**Design-time triggers (apply proactively, before "billions of rows" is the question):**
-
-- User is **designing a new entity collection** (e.g. `Order`, `Event`,
-  `Document`, `Sensor`, `Customer`) that will accumulate over time. Even if
-  the current size is small, plan for promotion to `GigaMap` if growth is
-  plausible — the choice of container shape is hard to change later.
-- User is **adding a new entity type** that will need lookups by anything
-  other than identity — by date range, by foreign key, by string field, by
-  geographic position, by similarity. Each of those points to an indexer
-  configuration that should be sketched at design time.
-- User is **scaling up** an existing aggregate from in-memory `List`/`Map` to
-  something query-capable.
-- User is **designing query / search / filter capabilities** in the service
-  layer — GigaMap's index types determine which queries are cheap.
-
-**Reactive triggers:**
-
-- User has or expects > 100,000 entities and wants indexed access.
-- User asks for queries, search, filtering.
-- User mentions any GigaMap-specific API: `GigaMap`, `GigaQuery`, indexer classes,
-  `SubQuery`, Lucene / vector indices.
-- User is updating entities and asks how to propagate changes to the indices.
-
-**Route elsewhere** when:
-
-- User has a small collection (< 100K) — a plain `ArrayList` / `HashMap` is
-  simpler. Maybe wrap in `Lazy<>` if size bothers startup.
-- User wants a SQL-like query → GigaMap has a different API; be explicit.
-- User wants to cache values across processes → `cache-jcache`.
-
-## Mental model
-
-A `GigaMap<E>` holds entities of type `E` in segments. Each entity has an
-internal `entityId`. For each declared **indexer**, GigaMap maintains an **index**
-that maps index keys to entity ids.
-
-A **query** is a boolean combination of index conditions. Execution resolves the
-boolean to a set of entity ids, then materializes the entities lazily (only the
-segments containing hits are loaded).
-
-Mutations go through GigaMap's own `add`/`remove`/`update` methods so the indices
-stay in sync. Bypassing them (mutating the entity directly) leaves the indices
-stale.
+- Small collection (< 100K) → plain `ArrayList` / `HashMap`, optionally
+  `Lazy<>`-wrapped.
+- SQL-like query semantics → not this API.
+- Cross-process value cache → `cache-jcache`.
 
 ## Maven setup
 
-```xml
-<dependency>
-  <groupId>org.eclipse.store</groupId>
-  <artifactId>gigamap</artifactId>
-  <version>${eclipse-store.version}</version>
-</dependency>
+All under `groupId=org.eclipse.store`, `version=${eclipse-store.version}`:
 
-<!-- Optional: full-text -->
-<dependency>
-  <groupId>org.eclipse.store</groupId>
-  <artifactId>gigamap-lucene</artifactId>
-  <version>${eclipse-store.version}</version>
-</dependency>
-
-<!-- Optional: vector similarity -->
-<dependency>
-  <groupId>org.eclipse.store</groupId>
-  <artifactId>gigamap-jvector</artifactId>
-  <version>${eclipse-store.version}</version>
-</dependency>
-```
-
-Spatial (point/lat-lon) is part of the core `gigamap` artifact — no extra
-dependency.
+| `artifactId` | Required for |
+|---|---|
+| `gigamap` | Core + bitmap + spatial. |
+| `gigamap-lucene` | Full-text. |
+| `gigamap-jvector` | HNSW vector similarity. |
 
 ## Core API
 
@@ -139,27 +68,37 @@ From `org.eclipse.store.gigamap.types`:
 | Symbol | Purpose |
 |---|---|
 | `GigaMap<E>` | The collection. |
-| `GigaMap.<E>Builder()` | Fluent builder. |
+| `GigaMap.New()` | No-index map, identity equality. |
+| `GigaMap.New(Equalator<? super E>)` | No-index map with custom equality. |
+| `GigaMap.<E>Builder()` | Fluent builder for indexed map. |
 | `.withBitmapIdentityIndex(indexer)` | Identity index (unique id, fastest lookup). |
 | `.withBitmapUniqueIndex(indexer)` | Uniqueness constraint. |
 | `.withBitmapIndex(indexer)` | Non-unique bitmap index (also used for `SpatialIndexer`). |
+| `.withIdentityEquality()` / `.withValueEquality()` | Equality mode for the indexed map (default: identity). |
 | `.build()` | Create the map. |
 | `map.index().register(LuceneIndex.Category(ctx))` | Attach a Lucene full-text index post-build. |
 | `map.index().register(VectorIndices.Category())` then `vectorIndices.add(name, cfg, vectorizer)` | Attach a jvector similarity index. |
-| `GigaQuery<E>` | Fluent query. |
+| `map.add(e)` / `map.remove(e)` / `map.update(e, mutator)` / `map.apply(e, fn)` | The only safe entry points for mutation. |
+| `map.store()` | Persist (acquires GigaMap's internal lock). Never use `storageManager.store(map)` directly. |
+| `GigaQuery<E>` | Fluent query — `.toList()`, `.count()`, `.iterator()` (try-with-resources). |
 | `GigaMap.SubQuery` | Abstraction for things that contribute id sets to a query. |
 
-Indexer base classes (in `org.eclipse.store.gigamap.types`):
+Indexer base classes (in `org.eclipse.store.gigamap.types`) and the
+abstract method each one demands:
 
-| Indexer | For type |
-|---|---|
-| `IndexerString.Abstract<E>` | `String` |
-| `BinaryIndexerUUID.Abstract<E>` | `UUID` |
-| `IndexerLocalDate.Abstract<E>`, `IndexerLocalDateTime.Abstract<E>` | `java.time.*` |
-| `IndexerByte.Abstract<E>`, `IndexerInteger.Abstract<E>`, `IndexerLong.Abstract<E>` | primitives/wrappers |
-| `IndexerFloat.Abstract<E>`, `IndexerDouble.Abstract<E>` | floats |
-| `IndexerBoolean.Abstract<E>` | boolean |
-| `IndexerMultiValue.Abstract<E, K>` | collections of K per entity |
+| Indexer | For type | Override |
+|---|---|---|
+| `IndexerString.Abstract<E>` | `String` | `public String getString(E)` |
+| `BinaryIndexerUUID.Abstract<E>` | `UUID` | `protected UUID getUUID(E)` |
+| `IndexerLocalDate.Abstract<E>` | `LocalDate` | `protected LocalDate getLocalDate(E)` |
+| `IndexerLocalDateTime.Abstract<E>` | `LocalDateTime` | `protected LocalDateTime getLocalDateTime(E)` |
+| `IndexerInteger.Abstract<E>` | `Integer` | `protected Integer getInteger(E)` |
+| `IndexerLong.Abstract<E>` | `Long` | `protected Long getLong(E)` |
+| `IndexerByte.Abstract<E>` | `Byte` | `protected Byte getByte(E)` |
+| `IndexerFloat.Abstract<E>` | `Float` | `protected Float getFloat(E)` |
+| `IndexerDouble.Abstract<E>` | `Double` | `protected Double getDouble(E)` |
+| `IndexerBoolean.Abstract<E>` | `Boolean` | `protected Boolean getBoolean(E)` |
+| `IndexerMultiValue.Abstract<E, K>` | `Collection<K>` | `public Iterable<K> indexEntityMultiValue(E)` + `public Class<K> keyType()` |
 
 Annotations (for simple cases):
 
@@ -171,91 +110,43 @@ Annotations (for simple cases):
 
 ## Index types in depth
 
-Four index families. Pick by the query shape you need — they compose via
-`SubQuery.and(...)`.
-
 ### Bitmap — exact + range, the default
 
-The workhorse. Off-heap bit sets keyed by entity value; scales to billions
-of entries. Use for equality, `in`-list, range, and predicate queries on
-scalar or collection-valued fields.
-
-Three registration variants on the builder:
+Off-heap bit sets keyed by entity value; equality, `in`-list, range, and
+predicate queries on scalar or collection-valued fields. Three registration
+variants:
 
 | Builder method | Semantics |
 |---|---|
-| `.withBitmapIdentityIndex(indexer)` | Unique **and** used internally for `remove` / `update` lookup. Declare one on a stable id field for any large map. |
-| `.withBitmapUniqueIndex(indexer)` | Uniqueness constraint. Adding a duplicate throws `UniqueConstraintViolationException`. |
-| `.withBitmapIndex(indexer)` | Non-unique; many entities per key. Also the path for `SpatialIndexer` (see below). |
+| `.withBitmapIdentityIndex(indexer)` | Unique **and** used internally for `remove` / `update` lookup. |
+| `.withBitmapUniqueIndex(indexer)` | Uniqueness constraint. Duplicate → `UniqueConstraintViolationException`. |
+| `.withBitmapIndex(indexer)` | Non-unique; many entities per key. Also the path for `SpatialIndexer`. |
 
-Indexer shapes (all in `org.eclipse.store.gigamap.types`, abstract-class
-pattern — override a single getter):
-
-- **Regular** — one key per entity (`IndexerString`, `IndexerLocalDate`,
-  `IndexerBoolean`, …).
-- **Binary** — fixed-width opaque ids (`BinaryIndexerUUID`). Stored as raw
-  bytes; cheaper than treating a UUID as a string.
-- **Byte-decomposed** — numerics internally split across byte positions so
-  range queries are bitmap unions (`IndexerInteger`, `IndexerLong`,
-  `IndexerDouble`, `IndexerFloat`, `IndexerByte`, `IndexerShort`).
-- **Multi-value** — `IndexerMultiValue.Abstract<E, K>` for entities whose
-  indexed field is a `Collection<K>` (tags, roles, interests). Adds
-  `.all(k1, k2, …)` alongside `.is` / `.in`.
-
-Operators: `is`, `in`, `not`, `notIn`, `is(Predicate)`; numeric/temporal add
-`greaterThan`, `greaterThanEqual`, `lessThan`, `lessThanEqual`, `between`,
-`before`, `after`, `isYear`, `isMonth`.
-
-Performance rule of thumb. Identity-index lookup ≈ O(1). Bitmap intersection
-scales linearly in the union of selected postings (not in the map size), so
-selective `.and` chains stay fast even at 10⁹ entries. Broad queries without
-a selective clause defeat the point.
+Operator catalogue (`is`, `in`, `not`, `notIn`, `is(Predicate)`, range and
+temporal operators, multi-value `.all`) → `references/query-dsl.md`.
 
 ### Lucene — full-text search with scoring
 
-Separate artifact. Use when you need analyzer-driven tokenization, phrase,
-wildcard, fuzzy, or score-ranked results — anything beyond exact/range on a
-string.
-
-```xml
-<dependency>
-  <groupId>org.eclipse.store</groupId>
-  <artifactId>gigamap-lucene</artifactId>
-  <version>${eclipse-store.version}</version>
-</dependency>
-```
-
-Register **after** building the map, via `map.index().register(...)`:
+Separate artifact (`gigamap-lucene`). Use when you need analyzer-driven
+tokenization, phrase, wildcard, fuzzy, or score-ranked results — anything
+beyond exact/range on a string. Wire post-build with the restart-safe
+get-or-register idiom (after deserialization the category is already
+attached, so `register(...)` would return `null`):
 
 ```java
-public class ArticlePopulator extends DocumentPopulator<Article> {
-    @Override public void populate(Document doc, Article a) {
-        doc.add(createTextField("title",   a.title()));
-        doc.add(createTextField("content", a.content()));
-    }
-}
-
-LuceneContext<Article> ctx = LuceneContext.New(
-    Paths.get("lucene-index"), new ArticlePopulator());
-
-GigaMap<Article> articles = GigaMap.New();
-LuceneIndex<Article> lucene = articles.index()
-    .register(LuceneIndex.Category(ctx));
-
-articles.add(new Article("Python Guide", "…"));
-
-// List result
-List<Article> matches = lucene.query("title:Python");
-
-// Scored, sub-query-able
-LuceneSearchResult<Article> hits = lucene.search("content:\"best practices\"", 100);
+LuceneIndex<E> lucene = map.index().get(LuceneIndex.class);
+if (lucene == null) lucene = map.index().register(LuceneIndex.Category(ctx));
 ```
 
-Query syntax is standard Lucene: `field:term`, `AND`/`OR`/`NOT`, `"phrase"`,
-`wild*`, `fuzzy~`, ranges `[a TO b]`. Results combine with bitmap queries
-via `.and(...)` — see Pattern J. The Lucene index directory is owned by
-Lucene, not by Eclipse Store's storage — back it up alongside your
-`storage/` directory.
+`ctx` is a `LuceneContext` bound to a `DocumentPopulator<E>` and an
+on-disk directory. `lucene.query(q)` returns `List<E>`; `lucene.search(q, k)`
+returns a `LuceneSearchResult<E>` that's sub-queryable via `.and(...)`
+(Pattern H). **`LuceneIndex` is `Closeable`** and holds an on-disk
+write lock that `storageManager.close()` does **not** cascade — call
+`luceneIndex.close()` before reopening storage in the same JVM. The
+Lucene directory is owned by Lucene — back it up **separately** from
+EclipseStore's `storage/`. Detail (provided Maven deps, query syntax,
+score handling) in `references/lucene.md`.
 
 ### Spatial — latitude / longitude, part of core
 
@@ -301,207 +192,97 @@ List<Store> hits = map.query(loc.near(40.7128, -74.0060, 50.0))
     .toList();
 ```
 
-Skipping `withinRadius` is fine when the extra ≤ 41 % area in the box corners
-doesn't matter (e.g. "shops roughly within 5 km"). For cutoff-sensitive
-queries (billing zones, legal radii) the post-filter is mandatory.
-
-Points only — no polygons, no linestrings, no arbitrary geometries. If you
-need those, keep a full geometry object on the entity and post-filter the
-same way you'd chain `withinRadius`. Lat/lon getters return `Double`
-(nullable).
+Lat/lon getters return `Double` (nullable — `isNull()` matches missing
+coordinates). Points only — no polygon / linestring geometry. For
+cutoff-sensitive queries (billing zones, legal radii) the `withinRadius`
+post-filter is mandatory; for approximate queries it's optional.
 
 ### Vector — HNSW similarity search via jvector
 
-Separate artifact. Eclipse Store wraps [JVector](https://github.com/datastax/jvector)
-(an HNSW kNN library) so a `GigaMap<E>` becomes a vector-searchable map: each
-entity gets one or more named vector indices, mutations broadcast automatically,
-and search returns lazily-resolved entities. Sub-queryable with bitmap and
-Lucene (Pattern J).
+Separate artifact (`gigamap-jvector`). Eclipse Store wraps
+[JVector](https://github.com/datastax/jvector) (an HNSW kNN library) so a
+`GigaMap<E>` becomes a vector-searchable map: named vector indices,
+automatic mutation broadcast, lazily-resolved search results, sub-queryable
+with bitmap and Lucene (Pattern H).
 
-```xml
-<dependency>
-  <groupId>org.eclipse.store</groupId>
-  <artifactId>gigamap-jvector</artifactId>
-  <version>${eclipse-store.version}</version>
-</dependency>
-```
+> **JVM flag.** Add `--add-modules jdk.incubator.vector` for SIMD
+> acceleration via the Panama Vector API. Java 21 LTS recommended.
 
-> **JVM flag.** Add `--add-modules jdk.incubator.vector` to enable the Panama
-> Vector API. Without it, JVector falls back to scalar code — functional but
-> noticeably slower on indexing and search. Java 20+ recommended; Java 21 LTS
-> is the sweet spot.
-
-#### Vectorizer: embedded vs computed mode
-
-`Vectorizer<E>` has one decision: `isEmbedded()`. It controls **where the
-vectors live**, and is one of the highest-leverage design choices in the
-whole skill — switching modes later means rebuilding the index from scratch.
-
-| Mode | When `vectorize()` runs | Vector storage | Pick when |
-|---|---|---|---|
-| **Embedded** (`isEmbedded() == true`) | On every graph build/search hit (cached per-search) | None — vector is read from the entity field | The entity already carries its `float[]` embedding (e.g. `record Doc(String text, float[] embedding)`). No duplicate storage. |
-| **Computed** (default, `isEmbedded() == false`) | Once at `gigaMap.add(entity)` | Separate internal `GigaMap<VectorEntry>` | Vectors come from an external/expensive source (OpenAI, sentence-transformers, image embedder). The vector is persisted separately so you don't re-call the API on restart. |
-
-`Vectorizer.vectorize()` **must be thread-safe** — multiple build / search
-threads call it concurrently on the same instance — and **must never return
-`null`** for an entity that's present (throws `IllegalStateException` at insert
-time). Override `vectorizeAll(List<E>)` to batch-vectorize against APIs that
-support it (e.g. OpenAI's `input: ["a", "b", "c"]` form) — the default loops
-one at a time.
+`Vectorizer<E>.isEmbedded()` decides where vectors live: **embedded** =
+read from the entity (`record Doc(String text, float[] embedding)`),
+**computed** (default) = computed once at `add` and persisted in an
+internal `GigaMap<VectorEntry>`. Mode is fixed at build — switching means
+rebuilding from scratch. Pick **embedded** when the entity already carries
+the vector; **computed** when the source is expensive (OpenAI, image
+embedder).
 
 ```java
-// Embedded — vector lives on the entity
 public class DocVectorizer extends Vectorizer<Doc> {
     @Override public float[] vectorize(Doc d) { return d.embedding(); }
     @Override public boolean isEmbedded()     { return true; }
 }
 
-// Computed — call out to an embedding API once at insert time
-public class OpenAIVectorizer extends Vectorizer<Doc> {
-    @Override public float[] vectorize(Doc d) {
-        return openai.embed(d.text());
-    }
-    @Override public List<float[]> vectorizeAll(List<? extends Doc> docs) {
-        return openai.embedBatch(docs.stream().map(Doc::text).toList());
-    }
-}
-```
-
-#### Configuration
-
-`VectorIndexConfiguration.builder()` exposes HNSW + lifecycle parameters:
-
-| Parameter | Default | What it controls |
-|---|---|---|
-| `dimension` | (required) | Length of every `float[]`. Mismatch throws at insert. |
-| `similarityFunction` | `COSINE` | `COSINE`, `DOT_PRODUCT`, or `EUCLIDEAN`. |
-| `maxDegree` | 16 | HNSW "M" — neighbours per node. Higher = better recall, more memory. |
-| `beamWidth` | 100 | HNSW "efConstruction" — build-time candidate fan-out. Use ≥ 2× `maxDegree`. |
-| `minSearchBeamWidth` | — | Minimum search-time `ef`. |
-| `neighborOverflow` | 1.2 | Overflow during construction. |
-| `alpha` | 1.2 | Pruning parameter. |
-| `onDisk` | `false` | Memory-map graph from disk. Required for datasets > RAM. |
-| `indexDirectory` | `null` | Path for `{name}.graph` + `{name}.meta` files. Required if `onDisk=true`. |
-| `enablePqCompression` | `false` | Product Quantization. **Forces `maxDegree=32`** (FusedPQ). |
-| `pqSubspaces` | 0 (auto: `dim/4`) | Must divide `dimension` evenly. |
-| `parallelOnDiskWrite` | `false` | Multi-threaded persist. Faster for huge indices, more resources. |
-| `eventualIndexing` | `false` | Defer graph mutations to background thread (vector store still updated synchronously). Reduces add latency, search briefly stale. |
-| `persistenceIntervalMs` | 0 (off) | Background persist every N ms. |
-| `minChangesBetweenPersists` | 100 | Persist threshold. |
-| `persistOnShutdown` | `true` | Flush on `close()`. |
-| `optimizationIntervalMs` | 0 (off) | Background `cleanup()` every N ms. |
-| `minChangesBetweenOptimizations` | 1000 | Optimize threshold. |
-| `optimizeOnShutdown` | `false` | Run cleanup on `close()`. |
-
-Factory presets cover the common cases — start there, override only what you
-need:
-
-| Preset | What you get |
-|---|---|
-| `forSmallDataset(dim)` | < 10K vectors. In-memory. `maxDegree=16`, `beamWidth=100`. |
-| `forMediumDataset(dim)` / `(dim, indexDirectory)` | 10K–1M. Optionally on-disk. |
-| `forLargeDataset(dim, indexDirectory)` / `(dim, dir, enableCompression)` | > 1M. On-disk by default; PQ optional. |
-| `forHighPrecision(dim)` / `(dim, indexDirectory)` | Maximum recall. `maxDegree=48-64`, `beamWidth=400-500`. |
-
-Each preset also has a `builderFor*` variant that returns a `Builder` so you
-can override one or two parameters without losing the rest.
-
-#### Building, registering, searching
-
-Lucene and vector indices are **not** declared on the `GigaMap.Builder` — they
-register post-build on `map.index()`. Multiple named vector indices per map
-are allowed (e.g. one for title embeddings, one for body embeddings).
-
-```java
 GigaMap<Doc> docs = GigaMap.New();
 
-VectorIndexConfiguration cfg = VectorIndexConfiguration.builder()
-    .dimension(768)
-    .similarityFunction(VectorSimilarityFunction.COSINE)
-    .build();
+VectorIndexConfiguration cfg = VectorIndexConfiguration
+    .forMediumDataset(768);                          // (1)
 
-VectorIndices<Doc> vectorIndices = docs.index().register(VectorIndices.Category());
-VectorIndex<Doc>   embeddings    = vectorIndices.add("embeddings", cfg, new DocVectorizer());
+// Restart-safe — after deserialization the category is already attached,
+// so register(...) would return null.
+VectorIndices<Doc> indices = docs.index().get(VectorIndices.class);
+if (indices == null) indices = docs.index().register(VectorIndices.Category());
+
+VectorIndex<Doc> embeddings = indices.ensure("embeddings", cfg, new DocVectorizer());  // (2)
 
 docs.add(new Doc("Hello world", vec));
 
-// Top-k by query vector
 VectorSearchResult<Doc> top = embeddings.search(queryVector, 10);
 for (var entry : top) {
     System.out.println(entry.score() + ": " + entry.entity().title());
 }
-
-// Top-k similar to an existing entity ("more like this") — convenience overload
-VectorSearchResult<Doc> similar = embeddings.search(someDoc, 10);
-
-// Override search-time beam width per query (latency vs recall)
-VectorSearchResult<Doc> highRecall = embeddings.search(queryVector, 10, 200);
-
-// Round-trip a stored vector by entity id
-float[] stored = embeddings.getVector(docs.add(new Doc(...)));
 ```
 
-Use `vectorIndices.ensure(name, cfg, vectorizer)` instead of `.add(...)` when
-the index might already exist (e.g. on the second startup of the application
-after the GigaMap has been deserialized from storage). On restart, persisted
-indices come back automatically — there's no manual rewire step.
+(1) `forSmallDataset` / `forMediumDataset` / `forLargeDataset` /
+`forHighPrecision` factory presets cover most cases. Each has a
+`builderFor*(...)` variant if you need to override one parameter.
+(2) `ensure(name, cfg, vectorizer)` is the restart-safe sibling of `add(...)`
+— returns the existing named index on the second run.
 
-#### Sub-queries
-
-`VectorSearchResult<E>` is a `SubQuery`. Combine with bitmap and Lucene via
-`.and(...)`:
-
-```java
-VectorSearchResult<Doc> hits = embeddings.search(queryVec, 50);
-List<Doc> tech = docs.query(category.is("tech"))
-    .and(hits)
-    .toList();
-```
-
-When used as a `SubQuery` only the matched id set is intersected — scores are
-dropped. Keep scores by inverting the chain (`hits.and(docs.query(...))`)
-which returns a `ScoredSearchResult` (Pattern J).
-
-#### Limits and gotchas
-
-- **~2.1 billion vectors per index.** JVector uses `int` for graph node
-  ordinals. Shard across multiple `VectorIndex` instances if you exceed it.
-- **Vectorizer must be thread-safe and non-null.** See `references/pitfalls-deep-dive.md`.
-- **PQ compression silently sets `maxDegree=32`** (FusedPQ requirement).
-  Don't fight it.
-- **Dimension is fixed at build.** Mixing 768-dim and 1024-dim throws on
-  `add`. Changing dimension means a new index name + rebuild.
-- **On-disk format version 2.** Older files are auto-rebuilt from the source
-  vectors on first load — one-time cold-start cost, no data loss.
-- **`eventualIndexing=true` decouples vector-store writes (synchronous) from
-  graph mutations (queued).** Search may miss recent adds until the queue
-  drains. `optimize()`, `persistToDisk()`, and `close()` all drain first, so
-  consistency is restored at those checkpoints.
-
-Deeper treatment: `references/vector-deep-dive.md` covers HNSW parameter
-tuning, mode selection guide, on-disk lifecycle, and the eventual-indexing
-consistency model.
+**`VectorIndex` is `Closeable`** (on-disk graph holds file handles). Close
+it before `storage.close()` if you'll reopen storage in the same JVM.
+Design-side detail (mode, similarity, HNSW tuning, sub-query semantics,
+sharding, recall measurement) → `references/vector-deep-dive.md`.
+Operations (full parameter table, restart-safe wiring, on-disk format, PQ,
+background tasks, operational checklist) → `references/vector-operations.md`.
 
 ## Idiomatic patterns
 
 ### Pattern A — Define indices as constants
 
-Keep indexers in a dedicated class so queries can reference them:
-
 ```java
 public final class PersonIndices {
     public static final BinaryIndexerUUID<Person> id = new BinaryIndexerUUID.Abstract<>() {
-        @Override protected UUID getUUID(Person p) { return p.id(); }
+        @Override protected UUID getUUID(Person p) { return p.id(); }       // (1)
     };
     public static final IndexerString<Person> lastName = new IndexerString.Abstract<>() {
-        @Override public String getString(Person p) { return p.lastName(); }
+        @Override public String getString(Person p) { return p.lastName(); } // (2)
     };
     public static final IndexerLocalDate<Person> birthDate = new IndexerLocalDate.Abstract<>() {
         @Override protected LocalDate getLocalDate(Person p) { return p.birthDate(); }
     };
+    public static final IndexerMultiValue<Person, String> tags =
+        new IndexerMultiValue.Abstract<Person, String>() {                   // (3)
+            @Override public Iterable<String> indexEntityMultiValue(Person p) { return p.tags(); }
+            @Override public Class<String> keyType()                         { return String.class; }
+        };
     private PersonIndices() {}
 }
 ```
+
+Match the abstract base's visibility — see the **Override** column in the
+Indexer base classes table above. `getString` is `public`; numeric /
+temporal / UUID getters are `protected`; `IndexerMultiValue` overrides two
+`public` methods.
 
 ### Pattern B — Build a GigaMap
 
@@ -512,9 +293,6 @@ GigaMap<Person> map = GigaMap.<Person>Builder()
     .withBitmapIndex(PersonIndices.birthDate)
     .build();
 ```
-
-**Always declare an identity index** when each entity has a unique id — otherwise
-remove/update fall back to slow compound searches.
 
 ### Pattern C — Add, query, store
 
@@ -538,26 +316,30 @@ map.store();
 
 ### Pattern D — Update via `update` / `apply`
 
-**Never mutate entity fields directly.** The indices won't see the change.
-
 ```java
 map.update(person, p -> {
     p.setLastName("Jones");
     p.setAddress(newAddress);
 });
-map.store();   // persists entity AND updated indices
+map.store();
 ```
 
-`apply(E, Function<? super E, R>)` does the same mutation + reindex but returns
-a value from the lambda — use it instead of `update` when the caller needs the
-result:
+`apply(E, Function<? super E, R>)` is the same but returns a value from the
+lambda:
 
 ```java
-map.apply(person, p -> {
+String oldEmail = map.apply(person, p -> {
+    String prev = p.email();
     p.setEmail("new@example.com");
-    return p;
+    return prev;
 });
 ```
+
+**Records / immutable entities.** `update` / `apply` rely on in-place
+mutation, so they don't fit immutable types. With a record, do `map.remove(old);
+map.add(newInstance);` — combine with `.withValueEquality()` on the builder
+if the new instance is value-equal to the old one (else use identity / pass
+the same record reference to `remove`).
 
 ### Pattern E — Remove
 
@@ -585,105 +367,51 @@ try (var it = map.query(PersonIndices.lastName.is("Smith")).iterator()) {
 
 Deadlock follows silently if you forget.
 
-### Pattern G — Queries: boolean combinations, `in`/`not`/`notIn`, predicates
+### Pattern G — Query DSL (boolean / range / predicate / multi-value)
 
 ```java
-// AND
+// Boolean combinations
 map.query(lastName.is("Smith").and(birthDate.isYear(1990)));
-
-// OR
 map.query(lastName.is("Smith").or(lastName.is("Jones")));
-
-// IN
 map.query(lastName.in("Smith", "Jones", "Brown"));
-
-// NOT / NOT IN
 map.query(lastName.not("Smith"));
-map.query(lastName.notIn("Smith", "Jones"));
+
+// Range (numeric + temporal indexers)
+map.query(price.between(10, 100));
+map.query(birthDate.before(LocalDate.now().minusYears(18)));
 
 // Predicate on the index key
 map.query(lastName.is(n -> n.length() > 5));
-```
 
-### Pattern H — Range queries
-
-Numeric and temporal indexers support comparisons:
-
-```java
-map.query(price.greaterThan(100));
-map.query(price.lessThanEqual(50));
-map.query(price.between(10, 100));
-map.query(birthDate.isYear(2000));
-map.query(birthDate.before(LocalDate.now().minusYears(18)));
-```
-
-### Pattern I — Multi-value indexer
-
-One entity has multiple keys (tags, interests):
-
-```java
-public static final IndexerMultiValue<Person, Interest> interests =
-    new IndexerMultiValue.Abstract<>() {
-        @Override public Iterable<Interest> indexEntityMultiValue(Person p) {
-            return p.interests();
-        }
-        @Override public Class<Interest> keyType() { return Interest.class; }
-    };
-
+// Multi-value indexer (e.g. IndexerMultiValue<Person, Interest>)
 map.query(interests.is(Interest.SPORTS));         // contains SPORTS
-map.query(interests.in(Interest.SPORTS, Interest.LITERATURE));  // any of
-map.query(interests.all(Interest.SPORTS, Interest.LITERATURE)); // both
+map.query(interests.all(Interest.SPORTS, Interest.LITERATURE)); // contains both
 ```
 
-### Pattern J — Sub-queries (combine across index types)
+Full operator catalogue (`greaterThan`, `lessThanEqual`, `isYear`, `isMonth`,
+`after`, `before`, `notIn`, multi-value `.in`/`.not`/`.notIn`, …) lives in
+`references/query-dsl.md`.
 
-Intersect a bitmap query with a Lucene full-text hit list:
+### Pattern H — Sub-queries (combine across index types)
 
 ```java
-LuceneSearchResult<Article> hits = luceneIndex.search("content:eclipse", 100);
-List<Article> published = map.query(status.is("PUBLISHED"))
-    .and(hits)
-    .toList();
+// Bitmap + Lucene
+LuceneSearchResult<Article> luceneHits = luceneIndex.search("content:eclipse", 100);
+List<Article> published = map.query(status.is("PUBLISHED")).and(luceneHits).toList();
+
+// Bitmap + vector
+VectorSearchResult<Doc> vectorHits = vectorIndex.search(queryVec, 50);
+List<Doc> tech = map.query(category.is("tech")).and(vectorHits).toList();
 ```
 
-Intersect bitmap + vector:
+All sub-query combinations are logical AND. When a `LuceneSearchResult` /
+`VectorSearchResult` is **on the right** of `.and(...)`, scores are dropped
+(id-set intersection); inverting the chain (`hits.and(query)`) returns a
+`ScoredSearchResult` that preserves ordering. Sub-query helpers — bitmap +
+bitmap, `EntityIdMatcher.Ascending(...)`, score-preserving idioms — in
+`references/query-dsl.md`.
 
-```java
-VectorSearchResult<Doc> hits = vectorIndex.search(queryVec, 50);
-List<Doc> tech = map.query(category.is("tech"))
-    .and(hits)
-    .toList();
-```
-
-Intersect two bitmap queries:
-
-```java
-GigaQuery<Person> adults    = map.query(age.greaterThanEqual(18));
-GigaQuery<Person> berliners = map.query(city.is("Berlin"));
-long n = adults.and(berliners).count();
-```
-
-Intersect with a fixed id set:
-
-```java
-EntityIdMatcher allowed = EntityIdMatcher.Ascending(42L, 58L, 91L);
-List<Person> hits = map.query(firstName.is("John")).and(allowed).toList();
-```
-
-All sub-query combinations are logical AND.
-
-### Pattern K — Persistence: use `map.store()`
-
-```java
-map.add(person);
-map.update(otherPerson, p -> p.setAge(30));
-map.store();    // acquires GigaMap's internal lock during serialization
-```
-
-**Do not** call `storageManager.store(map)` unless you hand-synchronize. See
-Anti-pattern 3.
-
-### Pattern L — Root wiring
+### Pattern I — Root wiring
 
 GigaMap goes into your root object like any other field. Type handlers for
 GigaMap are registered automatically when the `gigamap` artifact is on the
@@ -759,124 +487,52 @@ process(it.next());   // iterator never closed → read lock never released
 try (var it = map.query(...).iterator()) { ... }
 ```
 
-### Anti-pattern 5 — Inserting null
-
-```java
-map.add(null);     // throws
-```
-
-GigaMap disallows nulls. Use sentinel objects or omit.
-
-### Anti-pattern 6 — Relying on identity equality when you needed value equality
-
-```java
-GigaMap<Entity> map = GigaMap.New();   // default: identity equality
-// Two separate Entity instances with same fields are treated as different
-```
-
-**Fix.**
-
-```java
-GigaMap<Entity> map = GigaMap.New(XHashing.hashEqualityValue());
-```
-
-Check your domain — identity is right for mutable entities with a stable identity
-field; value equality is right for immutable value objects.
-
-### Anti-pattern 7 — Ignoring `UniqueConstraintViolationException`
+### Anti-pattern 5 — Ignoring `UniqueConstraintViolationException`
 
 Adding two entities that collide on a unique index throws
-`UniqueConstraintViolationException`. Catching and swallowing breaks the GigaMap's
-invariants. Handle the duplicate at the domain level.
-
-### Anti-pattern 8 — Huge segment size to "save memory"
-
-Segment size is a design parameter. Default is fine. Going to 1 M per segment
-means lazy loading loads 1 M entities at a time. Going to 10 per segment means
-thousands of tiny segments and metadata overhead.
+`UniqueConstraintViolationException`. Catching and swallowing breaks the
+GigaMap's invariants. Handle the duplicate at the domain level.
 
 ## Pitfalls & gotchas
 
-1. **Indices must be declared up front.** Changing them means a migration — you
-   cannot add an index without scanning the data.
-2. **Updates must go through `update`/`apply`.** Direct mutation breaks indices.
-3. **Always prefer `gigaMap.store()` over `storageManager.store(gigaMap)`.**
-   `gigaMap.store()` acquires the GigaMap's internal lock for the duration of
-   the store; `storageManager.store(gigaMap)` does **not**. Concurrent
-   mutations during the latter walk a structure that is changing under the
-   serializer — the GigaMap's internal state becomes inconsistent and the
-   store fails. (Eclipse Store can detect this case and throw, which makes it
-   easier to spot than the silent variants.)
-4. **The GigaMap's internal lock covers GigaMap operations only.** Stored
-   *elements* (the values held in the GigaMap and any objects they reference)
-   can still be mutated by another thread during `gigaMap.store()` — the
-   GigaMap itself remains fine, but the persisted element graph may be
-   inconsistent. If a business operation modifies a GigaMap *and* other parts
-   of the object graph atomically, you still need an application-level lock
-   spanning both. See `concurrency-and-locking`.
-5. **Iterator lifecycle.** Read lock is held until the iterator is closed. A
-   leaked iterator holds the read lock open and starves writers. Always
-   try-with-resources for any iterator returned from a GigaMap (including
-   query results).
-6. **Null forbidden.** Use sentinel values if you need "absent".
-7. **Identity index: strongly recommended, not required.** Without it, you get
-   correct behaviour but far worse performance on removes/updates.
-8. **Query results are views.** They iterate lazily. Don't assume stability
+1. **Indices must be declared up front.** Adding an index later means a data
+   migration — you cannot register a new indexer without re-scanning.
+2. **`gigaMap.store()`'s lock covers GigaMap operations only.** Stored
+   *elements* can still be mutated by another thread during the store — the
+   GigaMap stays consistent but the persisted element graph may not.
+   Cross-aggregate atomicity (GigaMap mutation + other graph changes) needs
+   an application-level lock spanning both. See `concurrency-and-locking`.
+3. **Null forbidden.** `map.add(null)` throws. Use sentinels for "absent".
+4. **Query results are views.** Lazy iteration; don't assume stability
    across mutation.
-9. **Lucene and vector indexes are separate artifacts.** They come with their own
-   dependency footprint; don't pull them in "just in case".
-10. **Sub-queries must come from the same GigaMap.** Combining two queries from
-    two different maps is invalid.
+5. **Sub-queries must come from the same GigaMap.** Combining queries across
+   maps is invalid.
+
+## Symptom → fix
+
+| Exception / symptom | Cause | Fix |
+|---|---|---|
+| `BinaryPersistenceException: Inconsistent element count` | `storageManager.store(map)` ran concurrently with a mutation. | `map.store()` (acquires internal lock). |
+| `UniqueConstraintViolationException` | Duplicate on a `.withBitmapUniqueIndex(...)` field. | Handle the duplicate at the domain level; do not swallow. |
+| Queries return stale data after a setter call. | Direct field mutation bypassed the indices. | `map.update(e, mutator)` / `map.apply(e, fn)`. |
+| Reader threads deadlock under load. | A query iterator wasn't closed → read lock held. | Try-with-resources on every iterator. |
+| Removes / updates are slow on a large map. | No identity index — falls back to compound search. | Add `.withBitmapIdentityIndex(idIndexer)` to the builder. |
+| `map.index().register(Category())` returned `null`. | Category already attached (post-deserialization run). | Guard: `var i = map.index().get(SomeIndices.class); if (i == null) i = map.index().register(SomeIndices.Category(...));` |
+| `LockObtainFailedException: Lock held by this virtual machine` on second `EmbeddedStorage.start(...)`. | `LuceneIndex` / `VectorIndex` weren't closed before `storage.close()`; the on-disk `write.lock` survives in the same JVM. | Close them explicitly before storage close: `luceneIndex.close(); vectorIndex.close(); storage.close();` |
 
 ## Interactions with other skills
 
-- **`root-and-object-graph`** — GigaMap usually lives as a root-level field.
-- **`storing-data`** — use `gigaMap.store()`; the generic `storageManager.store()`
-  rules do not fully apply.
-- **`concurrency-and-locking`** — the canonical treatment of thread-safety for
-  Eclipse Store. GigaMap's internal RW lock makes individual operations atomic,
-  but cross-aggregate atomicity (a GigaMap mutation alongside other graph
-  changes) still needs an application-level lock.
-- **`lazy-loading`** — GigaMap is internally lazy; you don't need `Lazy<>`
-  around it. Wrapping in `Lazy<GigaMap<E>>` is wrong — GigaMap handles its own
+- **`lazy-loading`** — Do **not** wrap GigaMap in `Lazy<>`; it handles its own
   segment loading.
-- **`configuration`** — no GigaMap-specific config; it uses storage's normal
-  settings (channel count matters for write throughput).
-- **`custom-type-handlers`** — auto-registered for GigaMap types; you only need
-  handlers for your own entity classes if default reflection doesn't work.
-- **`legacy-type-mapping`** — schema evolution of the entity class works
-  normally; GigaMap's indices rebuild on start if the index definition matches.
-
-## Recipes
-
-**"When should I use GigaMap vs. `ArrayList`?"** → GigaMap when you need
-indexed queries, or when the collection is big enough that eager loading is a
-problem. `ArrayList` (possibly `Lazy<>`-wrapped) when you mainly iterate.
-
-**"Do I need Lucene?"** → Only if you need full-text search with scoring. For
-"find documents where title contains X", a plain `IndexerString` with `.is(pred)`
-may suffice.
-
-**"What's an identity index?"** → A bitmap index whose values are unique and
-serve as a primary key. Eclipse Store uses it to find entities for remove/update
-operations.
-
-**"How big can a GigaMap get?"** → Billions of entries, constrained by disk
-space and index memory. Queries remain fast because only hit segments load.
-
-**"How do I paginate?"** → `GigaQuery` exposes pagination APIs
-(`skip(n).limit(m)` or similar — check the `GigaQuery` javadoc).
-
-**"Can I mutate the entity class without rebuilding the index?"** → Adding/
-removing non-indexed fields is fine (normal `legacy-type-mapping`). Changing an
-indexed field's type requires rebuilding the index.
-
-**"How do I back up a GigaMap?"** → Like any other storage: configure a
-`backup-directory`. GigaMap data rides along.
-
-**"How do I test a GigaMap?"** → Build one in memory against a temp directory,
-add fixtures, run queries, assert on results. Remember try-with-resources on
-iterators.
+- **`storing-data`** — Use `gigaMap.store()`, not `storageManager.store(map)`.
+- **`concurrency-and-locking`** — GigaMap's internal RW lock makes single
+  operations atomic; cross-aggregate atomicity still needs an
+  application-level lock.
+- **`root-and-object-graph`** — GigaMap lives as a root-level field.
+- **`legacy-type-mapping`** — Adding / removing non-indexed fields is fine;
+  changing an indexed field's type requires rebuilding the index.
+- **`custom-type-handlers`** — GigaMap's own types are auto-registered; only
+  the entity classes may need handlers.
 
 ## Deeper lookups (on-demand)
 
@@ -885,12 +541,18 @@ iterators.
 - `references/query-dsl.md` — every query operator (`is`, `in`, `between`,
   `before`, `.and`, `.or`, `.not`, `notIn`, multi-value `.all`, spatial
   operators, predicates, scored-result handling).
+- `references/lucene.md` — `DocumentPopulator`, `LuceneContext`, query
+  syntax, sub-query semantics, backup considerations.
+- `references/vector-deep-dive.md` — design-side: embedded vs computed
+  mode, similarity function selection, HNSW parameter tuning, sub-query
+  semantics, presets, recall measurement, sharding past 2.1B.
+- `references/vector-operations.md` — operations-side: full
+  `VectorIndexConfiguration` parameter table, restart-safe wiring,
+  on-disk format + incremental mode, PQ compression, background tasks
+  + eventual-indexing consistency, operational checklist.
 - `references/examples-expanded.md` — realistic end-to-end programs (incl.
   vector search, embedded-mode RAG-style retrieval, on-disk + PQ).
 - `references/pitfalls-deep-dive.md` — each pitfall above with reproducer.
-- `references/vector-deep-dive.md` — HNSW parameter tuning, embedded vs
-  computed mode, on-disk lifecycle, PQ rerank, eventual-indexing semantics,
-  recall vs latency trade-offs.
 
 ## Upstream sources
 
