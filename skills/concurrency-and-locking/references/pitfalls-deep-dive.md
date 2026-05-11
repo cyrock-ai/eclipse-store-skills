@@ -15,8 +15,7 @@ lock.writeLock().lock();
 customer.setEmail("new@acme.com");
 // ...10ms of other work, intentionally inside the lock so far
 auditLog.append("email changed: " + customer.id());
-storage.store(customer);
-storage.store(auditLog);
+storage.storeAll(customer, auditLog);     // one durable unit; see Pitfall #6 in SKILL.md
 lock.writeLock().unlock();
 
 // Thread B (no lock!)
