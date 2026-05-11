@@ -63,6 +63,7 @@ off to a transaction manager.
 | `EmbeddedStorageManager` (I/O) | yes | Internal channel I/O / housekeeping / file locking. Graph it persists is **not** safe — application's job. |
 | Storage channels | yes | Internal I/O parallelism. **Not** an application-level concurrency primitive. |
 | `EmbeddedStorageManager.store(...)` | atomic for **durability** only | All-or-nothing on disk. In-memory graph not protected from concurrent mutation. |
+| `EmbeddedStorageManager.storeAll(Object...)` / `.storeAll(Iterable<?>)` | atomic for **durability** across all listed objects | **Single durable unit.** Use when one business op must persist multiple objects atomically (e.g. `storeAll(from, to)` in a transfer). Two consecutive `store()` calls are **not** atomic together — see Pitfall 6. |
 | `GigaMap` ops (`add` / `remove` / `update` / `get` / `apply`) | yes | Each acquires GigaMap's internal RW lock. Iterators must be try-with-resources. |
 | `gigaMap.store()` vs `storageManager.store(gigaMap)` | only `gigaMap.store()` | The former is `synchronized` on the GigaMap; the latter bypasses. **Always prefer `gigaMap.store()`.** |
 | `Lazy<T>.get()` | yes | Concurrent calls safe. Background-clearing thread won't reclaim a still-held reference. |
@@ -81,7 +82,10 @@ off to a transaction manager.
 
 `Action` is a `@FunctionalInterface` with `void execute()`. `Producer<R>`
 is `@FunctionalInterface` with `R produce()`. They're Eclipse-Serializer
-equivalents of `Runnable` / `Supplier<R>`.
+equivalents of `Runnable` / `Supplier<R>`. **Neither declares any
+`throws`** — checked exceptions inside the lambda body must be caught
+and rethrown as unchecked (`RuntimeException`, `UncheckedIOException`,
+etc.).
 
 ## Strategies, simple → advanced
 
@@ -252,21 +256,37 @@ the manual patterns: the lock must span both the mutation and the
    callbacks, blocking I/O. Bracket the mutation + store only.
 3. **Returning a mutable collection from inside the lock.** Caller
    mutates after release. Return an unmodifiable view, a defensive
-   copy, or a snapshot.
+   copy, or a snapshot. **For aggregate invariants** (`sum`, `count`,
+   `any`), compute the scalar *inside* the `read(...)` block and
+   return that — never the underlying collection.
 4. **Wrapping every method in `synchronized`.** Correct but
    single-threaded throughput. Switch to RW or striped when contention
    shows up in the profiler.
 5. **Mixing strategies on the same protected region.** `synchronized`
    and `LockedExecutor` over the same data do not serialise against
    each other.
+6. **Two consecutive `store()` calls treated as one atomic unit.**
+   `store(from); store(to);` inside one write lock is **not** durably
+   atomic — a crash between the two calls leaves persisted state
+   inconsistent across restart. Use `storeAll(from, to)` (one call,
+   one durable unit) whenever a business operation must persist
+   multiple objects together. The in-memory lock guarantees no other
+   thread interleaves; `storeAll` guarantees no crash can split the
+   persisted view.
 
 ## Testing
 
 The pattern that catches most regressions: N writer + M reader threads
 against a real `EmbeddedStorageManager`, thousands of mutations each,
-then assert invariants on the in-memory graph. **Restart the storage
-and re-assert on the persisted state** — that's what proves the lock
-covered `store()` and not just the mutation.
+then assert at two levels:
+
+1. **In-memory invariant** — after the stress run, check the live
+   graph (total balance unchanged, parent / child references
+   consistent, etc.).
+2. **Persisted invariant** — close the storage, restart from the same
+   directory, re-assert. This proves the lock covered the `store()`
+   call and not just the mutation; an in-memory-only invariant can
+   pass while the persisted view diverges.
 
 ## Interactions with other skills
 
