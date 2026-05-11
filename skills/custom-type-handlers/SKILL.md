@@ -10,32 +10,22 @@ description: >
   "XMemory", "PersistenceStoreHandler", "PersistenceLoadHandler", or needs to
   serialize a class Eclipse Store does not natively support (e.g., native handles,
   opaque third-party objects, types with computed fields).
-version: 0.1.0
+version: 0.2.0
 ---
 
 # Eclipse Store — Custom Type Handlers
 
-Eclipse Store handles standard JDK types (primitives, strings, collections) and
-arbitrary POJOs via reflection. For types it cannot serialize (native resources,
-third-party objects with hidden state, performance-critical types, or types with
-computed fields), write a custom binary type handler.
+Default reflection-based handlers cover POJOs. Write a custom handler when
+the type has native resources, opaque third-party state, computed fields, or
+needs a specific binary layout.
 
-## When to use this skill
+## Do NOT use this skill
 
-- Third-party type throws during serialization (reflection can't reach its fields
-  cleanly).
-- User needs exact control over the on-disk binary layout of a class.
-- User needs special create-time logic (e.g., register a native resource at load).
-- Computed/derived fields need to be skipped or recomputed.
-- Performance-sensitive hot type where reflection is too slow.
-
-**Route elsewhere** when:
-
-- User wants to evolve schema for an existing class → `legacy-type-mapping`.
-- User just needs a field stored differently → prefer composition/different POJO
-  shape; custom handlers are a last resort.
-- User wants to use the Serializer without storage → `serializer-standalone` (same
-  handler API, different foundation).
+- Evolving schema for an existing class → `legacy-type-mapping`.
+- A field needs different storage — prefer composition / different POJO shape;
+  custom handlers are a last resort.
+- Serializer without storage → `serializer-standalone` (same handler API,
+  different foundation).
 
 ## Mental model
 
@@ -53,6 +43,16 @@ graph is resolved.
 
 Handlers are **stateless** — Eclipse Store may invoke them concurrently.
 
+## Maven
+
+| `groupId` | `artifactId` | Use for |
+|---|---|---|
+| `org.eclipse.serializer` | `serializer` | Standalone `SerializerFoundation` + handler registration. |
+| `org.eclipse.store` | `storage-embedded` | Storage + `EmbeddedStorageFoundation.onConnectionFoundation(...)`. |
+
+`persistence-binary` (with `CustomBinaryHandler`, `BinaryField`, `Binary`) is
+transitive from either of the above — don't add it explicitly.
+
 ## Core API
 
 From `org.eclipse.serializer.persistence.binary.types`:
@@ -67,6 +67,7 @@ From `org.eclipse.serializer.persistence.binary.types`:
 | `PersistenceLoadHandler` | Load-side context passed to your `create` / `initializeState`; `.lookupObject(id)` resolves ids. |
 | `XMemory` | `sun.misc.Unsafe`-style direct field access for populating final/private fields. |
 | `XReflect.copyFields(from, to)` | Helper to copy all fields from a constructed copy into a shell instance, when the target class can only be initialized via constructor. |
+| `getClassDeclaredFieldOffset(Class<?>, String)` | **Inherited `static`** from `AbstractBinaryHandlerCustom`. Returns the `XMemory` field offset for `XMemory.setObject`. Call without prefix from inside the handler subclass; do not import. |
 
 Registration is on a foundation (serializer or embedded storage):
 
@@ -116,6 +117,17 @@ Reading inside `create` / `initializeState`:
   null for a stored 0 id).
 
 ## Idiomatic patterns
+
+**Start here** — pick by the shape of the type you're handling:
+
+| Type shape | Pattern |
+|---|---|
+| Mutable type with setters | A (use `Field(Class, getter, setter)`, skip `initializeState`) |
+| Final-field type with reference fields | A as shown (use `XMemory.setObject` in `initializeState`) |
+| Pure-primitive type, constructor accepts all values | B |
+| Opaque third-party type with a canonical string / value form | C |
+| Registration on storage | D |
+| Registration on standalone serializer | E |
 
 ### Pattern A — Handler for a type with two references
 
@@ -212,12 +224,10 @@ Cons: slightly larger binary (the zone-id string) than a hand-packed byte form.
 ### Pattern D — Register on a storage foundation
 
 ```java
-EmbeddedStorageManager storage = EmbeddedStorage.Foundation(
-        EmbeddedStorageConfiguration.Builder()
-            .setStorageDirectory("data")
-            .createConfiguration()
-    )
-    .onConnectionFoundation(cf -> {
+EmbeddedStorageManager storage = EmbeddedStorageConfiguration.Builder()
+    .setStorageDirectory("data")
+    .createEmbeddedStorageFoundation()       // returns EmbeddedStorageFoundation<?>
+    .onConnectionFoundation(cf -> {          // chained on the foundation, not the builder
         cf.registerCustomTypeHandler(new MoneyHandler());
         cf.registerCustomTypeHandler(new ZoneIdHandler());
         cf.registerCustomTypeHandler(new PointHandler());
@@ -225,7 +235,10 @@ EmbeddedStorageManager storage = EmbeddedStorage.Foundation(
     .start(root);
 ```
 
-All handlers must be registered **before** `start(root)`.
+All handlers must be registered **before** `start(root)`. After reopen of an
+existing storage directory, the `root` argument is ignored — call
+`storage.root()` to get the persisted graph back (see `getting-started` for
+the full root-wiring story).
 
 ### Pattern E — Register on a standalone serializer
 
@@ -342,44 +355,41 @@ composition (as in `storing-data` best practices).
 
 ## Recipes
 
-**"What's the smallest useful custom handler?"** → A handler for a class with a
-single primitive field — one `BinaryField<T>` declaration plus `create` reading
-that field via `binaryField.read_long(data)`. See Pattern B.
+**"Do I need a handler for a record?"** → Usually no — Eclipse Store
+handles records via reflection. Write one only if you want a different
+binary layout.
 
-**"Do I need a handler for a record?"** → Usually no — Eclipse Store handles records
-fine. Write one only if you want a different binary layout.
+**"How do I handle nulls inside a handler?"** → For references, a stored
+object id of `0` means null; `readReference(...)` and
+`handler.lookupObject(0)` both return null. Don't dereference without a
+null check.
 
-**"How do I handle nulls inside a handler?"** → For references, a stored object id
-of `0` means null. `handler.lookupObject(0)` returns null. Your code must tolerate
-that.
+**"Can I version my handler?"** → Not directly. Version the class shape;
+Eclipse Store uses Type IDs to distinguish stored versions. If the class
+changes, write a legacy handler for the old shape (`legacy-type-mapping`).
 
-**"Can I call Java serialization inside a handler?"** → Yes, technically, but
-you're defeating the point of Eclipse Store. Do it only as a migration step.
-
-**"Can I version my handler?"** → Not directly. Version the class shape; Eclipse
-Store uses Type IDs to distinguish stored versions. If the class changes, write a
-legacy handler for the old shape.
-
-**"How do I know if my handler is actually being used?"** → Log in the constructor
-(registration), log in `store`/`create` at DEBUG. Or check the type dictionary: the
-class will have your declared fields.
-
-**"Are there built-in handlers to read for inspiration?"** → Yes —
-`BinaryHandlerInetSocketAddress` in `persistence/binary/src/main/java/org/eclipse/serializer/persistence/binary/java/net/`
-is a production `CustomBinaryHandler` with the declarative `BinaryField` style.
-For lower-level (manual `AbstractBinaryHandlerCustom`) handlers, see
-`persistence/binary/.../internal/` (e.g. `BinaryHandlerString`,
-`BinaryHandlerArrayList`).
+**"Built-in handlers to read for inspiration?"** →
+`BinaryHandlerInetSocketAddress` (`persistence/binary/.../java/net/`) for
+the declarative `BinaryField` style. For lower-level manual handlers, see
+`persistence/binary/.../internal/` (`BinaryHandlerString`, `BinaryHandlerArrayList`).
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — `CustomBinaryHandler` factories, `BinaryField`
-  read methods, `PersistenceLoadHandler`, registration entry points.
-- `references/binary-offset-api.md` — manual offset / `Binary` API for
-  `AbstractBinaryHandlerCustom`-style handlers.
-- `references/examples-expanded.md` — full declarative handlers plus a JUnit
-  round-trip test template.
-- `references/pitfalls-deep-dive.md` — each pitfall above with reproducer and fix.
+- **Load `references/api-catalogue.md`** when you need a method overload
+  not in the in-line tables — full `BinaryField` factory list (with
+  `Getter_*` / `Setter_*` interfaces), `XMemory` primitive setters,
+  `XReflect.copyFields`, both constructor overloads of `CustomBinaryHandler`.
+- **Load `references/binary-offset-api.md`** when the declarative
+  `CustomBinaryHandler` style doesn't fit and you're dropping down to
+  `AbstractBinaryHandlerCustom<T>` — manual `Binary.store_*` / `read_*`,
+  entity header, variable-length payloads, offset constants.
+- **Load `references/examples-expanded.md`** when you want a complete
+  end-to-end template — full handler classes with imports, a registration
+  bootstrap, and a JUnit round-trip test for the round-trip assertion.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a handler
+  bug — race conditions, null reference fields, `NoSuchFieldException`,
+  data loss after round-trip, post-`.start()` registration attempts,
+  reordered `BinaryField` declarations.
 
 ## Upstream sources
 

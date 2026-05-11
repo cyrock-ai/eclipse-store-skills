@@ -119,12 +119,10 @@ import app.handlers.ZoneIdHandler;
 
 public final class Bootstrap {
     public static EmbeddedStorageManager start(AppRoot root) {
-        return EmbeddedStorage.Foundation(
-                EmbeddedStorageConfiguration.Builder()
-                    .setStorageDirectory("data")
-                    .setChannelCount(2)
-                    .createConfiguration()
-            )
+        return EmbeddedStorageConfiguration.Builder()
+            .setStorageDirectory("data")
+            .setChannelCount(2)
+            .createEmbeddedStorageFoundation()
             .onConnectionFoundation(cf -> {
                 cf.registerCustomTypeHandler(new MoneyHandler());
                 cf.registerCustomTypeHandler(new PointHandler());
