@@ -253,10 +253,11 @@ public class AppRoot {
 }
 
 public static void main(String[] args) {
+    AppRoot root = new AppRoot();
     try (EmbeddedStorageManager storage =
-             EmbeddedStorage.start(new AppRoot(), Paths.get("data"))) {
+             EmbeddedStorage.start(root, Paths.get("data"))) {
 
-        GigaMap<Doc> docs = ((AppRoot) storage.root()).docs();
+        GigaMap<Doc> docs = root.docs();
 
         // Restart-safe — register() returns null if the category is already attached.
         VectorIndices<Doc> indices = docs.index().get(VectorIndices.class);
