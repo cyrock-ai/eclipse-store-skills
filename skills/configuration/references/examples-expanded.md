@@ -40,7 +40,7 @@ entity-cache-timeout = 1h
 
 ```java
 EmbeddedStorageManager storage = EmbeddedStorageConfiguration
-    .load("/META-INF/eclipsestore/storage.ini")
+    .load("META-INF/eclipsestore/storage.ini")
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
 storage.start();
@@ -62,7 +62,7 @@ storage.start();
 
 ```java
 EmbeddedStorageManager storage = EmbeddedStorageConfiguration
-    .load("/storage.xml")
+    .load("storage.xml")
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
 storage.start();
@@ -90,7 +90,7 @@ import org.eclipse.serializer.configuration.types.ConfigurationLoader;
 import org.eclipse.serializer.configuration.yaml.types.ConfigurationParserYaml;
 
 EmbeddedStorageManager storage = EmbeddedStorageConfiguration.load(
-    ConfigurationLoader.New("/META-INF/eclipsestore/storage.yaml"),
+    ConfigurationLoader.New("META-INF/eclipsestore/storage.yaml"),
     ConfigurationParserYaml.New()
 )
 .createEmbeddedStorageFoundation()
@@ -108,6 +108,7 @@ import org.eclipse.store.storage.types.StorageWriteControllerReadOnlyMode;
 
 EmbeddedStorageFoundation<?> foundation = EmbeddedStorageConfiguration.Builder()
     .setStorageDirectory("data-readonly-copy")
+    .setChannelCount(4)                         // MUST match the writer's channel count
     .createEmbeddedStorageFoundation();
 
 var ro = new StorageWriteControllerReadOnlyMode(foundation.getWriteController());
@@ -117,7 +118,7 @@ try (EmbeddedStorageManager storage = foundation.createEmbeddedStorageManager())
     storage.start();
     AppRoot root = (AppRoot) storage.root();
     root.orders().forEach(System.out::println);
-    // any storage.store(...) call throws
+    // any storage.store(...) call throws AfsExceptionReadOnly
 }
 ```
 

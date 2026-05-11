@@ -11,7 +11,7 @@ description: >
   configuration", "ConfigurationLoader", "StorageChannelCountProvider",
   "StorageFileProvider", or needs help sizing channels/budgets or picking a config file
   format.
-version: 0.1.0
+version: 0.2.0
 ---
 
 # Eclipse Store — Configuration
@@ -28,15 +28,7 @@ For **deep** customization (custom file providers, custom housekeeping controlle
 custom channel-count providers) use the `EmbeddedStorageFoundation` directly — one
 layer under the fluent builder.
 
-## When to use this skill
-
-- User needs to change any configuration parameter beyond directory.
-- User wants to externalize config to a file so ops can edit it.
-- User is tuning channel count, housekeeping intervals, or file size thresholds.
-- User asks about read-only mode, backup directory, deletion directory.
-- User wants user-home (`~/...`) resolution in the storage directory.
-
-**Route elsewhere** when:
+## Do NOT use this skill
 
 - Just getting started / wiring the bootstrap → `getting-started`.
 - Tuning housekeeping beyond interval/budget → `housekeeping-and-deletion`.
@@ -86,8 +78,8 @@ EmbeddedStorageConfiguration.Builder()
 ## Core API — external config loading
 
 ```java
-// From a classpath resource (auto-detects XML vs INI by extension)
-EmbeddedStorageConfiguration.load("/META-INF/eclipsestore/storage.xml")
+// From a classpath resource (auto-detects XML vs INI by extension).
+EmbeddedStorageConfiguration.load("META-INF/eclipsestore/storage.xml")
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
 
@@ -99,16 +91,26 @@ EmbeddedStorageConfiguration.load()
 
 // YAML (requires `configuration-yaml`)
 EmbeddedStorageConfiguration.load(
-    ConfigurationLoader.New("/META-INF/eclipsestore/storage.yaml"),
+    ConfigurationLoader.New("META-INF/eclipsestore/storage.yaml"),
     ConfigurationParserYaml.New()
 ).createEmbeddedStorageFoundation().createEmbeddedStorageManager();
 
 // JSON / HOCON (requires `configuration-hocon`)
 EmbeddedStorageConfiguration.load(
-    ConfigurationLoader.New("/META-INF/eclipsestore/storage.json"),
+    ConfigurationLoader.New("META-INF/eclipsestore/storage.json"),
     ConfigurationParserHocon.New()
 ).createEmbeddedStorageFoundation().createEmbeddedStorageManager();
 ```
+
+**Path resolution order** (`EmbeddedStorageConfiguration.load(String)`):
+1. **Classpath** via `ClassLoader.getResource(path)` — `path` must **not**
+   begin with `/` (ClassLoader strips it and treats it as missing).
+2. **URL** — if the path parses as a `URL` (`file:`, `http:`, etc.).
+3. **Filesystem** — `new File(path)` if it exists.
+4. Otherwise throws `ConfigurationExceptionNoConfigurationFound`.
+
+Relative filesystem paths resolve against the JVM working directory (e.g.
+Surefire's `workingDirectory`, which defaults to the module base dir).
 
 ## Idiomatic patterns
 
@@ -132,6 +134,10 @@ storage.start();      // foundation.createEmbeddedStorageManager() returns an un
 `.start()` on it (shown above). `EmbeddedStorage.start(...)` is the alternative that
 returns a started one.
 
+Root wiring (`createEmbeddedStorageManager(root)` vs `setRoot()`/`storeRoot()`)
+lives in `root-and-object-graph` and `getting-started` — that decision is
+orthogonal to how you configured the storage.
+
 ### Pattern B — INI file plus classpath placement
 
 ```
@@ -150,7 +156,7 @@ data-file-maximum-size = 8 MiB
 
 ```java
 EmbeddedStorageManager storage = EmbeddedStorageConfiguration
-    .load("/META-INF/eclipsestore/storage.ini")
+    .load("META-INF/eclipsestore/storage.ini")
     .createEmbeddedStorageFoundation()
     .createEmbeddedStorageManager();
 storage.start();
@@ -189,20 +195,27 @@ created by copying the live directory. **Production**: only for read replicas /
 snapshot inspection — see the best-practices section below for per-environment
 guidance. **Limitations** (from upstream docs):
 
-- `.store()` throws on any call.
+- `.store()` throws `org.eclipse.serializer.afs.types.AfsExceptionReadOnly`
+  (a `RuntimeException`).
 - Housekeeping does not run (otherwise it would conflict with the owning writer).
 - The structure as seen at `.start()` is frozen — the manager does not pick up new
   writes from another JVM, and it will error if the writer compacts a file.
+- **The read-only manager's builder settings must match the writer's structural
+  settings** — in particular `setChannelCount(...)` must equal the writer's
+  channel count. Otherwise `StorageExceptionStructureValidation: Found channels
+  (N) don't match the configured channel count (M)` on `start()`.
 
 ```java
 EmbeddedStorageFoundation<?> foundation = EmbeddedStorageConfiguration.Builder()
     .setStorageDirectory("data")
+    .setChannelCount(4)                   // MUST match writer's channel count
     .createEmbeddedStorageFoundation();
 
 var roCtl = new StorageWriteControllerReadOnlyMode(foundation.getWriteController());
 foundation.setWriteController(roCtl);
 
 EmbeddedStorageManager storage = foundation.createEmbeddedStorageManager();
+storage.start();                          // still unstarted at this point — see Pattern A gotcha
 ```
 
 `roCtl.setReadOnly(false)` flips back to writable — only ever use this when no other
@@ -304,11 +317,12 @@ Pick one style.
 ### Anti-pattern 4 — Loading a file that doesn't exist without checking
 
 ```java
-EmbeddedStorageConfiguration.load("/missing.ini")   // throws PersistenceException
+EmbeddedStorageConfiguration.load("missing.ini")   // ConfigurationExceptionNoConfigurationFound
 ```
 
-The loader throws if the resource can't be resolved. For optional config,
-try-load-else-default with explicit error handling.
+The loader throws if the resource can't be resolved on classpath, as a URL,
+or on the filesystem. For optional config, try-load-else-default with
+explicit error handling.
 
 ### Anti-pattern 5 — Using `~/...` outside directory properties
 
@@ -352,22 +366,8 @@ test suite mixes both goals, split it — or pick the column whose goal dominate
 | JMX monitoring | auth/SSL off | auth/SSL off | **auth and SSL on** | **auth and SSL on** |
 | REST interface | optional | optional | off, or behind same auth as prod | off; if needed, behind auth and network isolation |
 
-**Key rules of thumb:**
-
-- **Staging mirrors prod.** The point of staging is to exercise the production
-  configuration end-to-end. Disabling backups, lock files, or auth in staging
-  defeats the dress rehearsal.
-- **Dev favours convenience.** Quick restarts beat operational fidelity on a
-  developer's machine. The storage is disposable.
-- **Test favours determinism.** Predictable, repeatable behaviour is more
-  valuable in tests than realistic throughput or backup pipelines.
-- **Channel count cannot be changed without migration.** Confirm the prod
-  number on representative staging hardware before you ship.
-- **Unauthenticated JMX is remote code execution.** Enable auth and SSL in any
-  environment reachable beyond a developer laptop.
-
-For per-feature reasoning (why each setting is recommended for each environment,
-what trade-off it represents), see `references/dev-test-staging-prod.md`.
+Per-feature reasoning (why each setting is recommended for each environment,
+what trade-off it represents) → `references/dev-test-staging-prod.md`.
 
 ## Pitfalls & gotchas
 
@@ -401,50 +401,41 @@ what trade-off it represents), see `references/dev-test-staging-prod.md`.
 
 ## Recipes
 
-**"Where does Eclipse Store put data by default?"** → `./storage` relative to the JVM
-working directory.
+**"How do I load config from `application.properties`?"** → You can't
+directly — that file is Spring's. Either use Spring Boot (`spring-boot`
+skill) or use INI/YAML/XML via `ConfigurationLoader`.
 
-**"How do I load config from `application.properties`?"** → You can't directly — that
-file is Spring's. Either use Spring Boot (`spring-boot` skill) or use INI/YAML/XML via
-`ConfigurationLoader`.
+**"How do I externalize only the directory?"** → Use a system property
+yourself: `Paths.get(System.getProperty("app.data.dir", "data"))`. Or rely
+on the full external config file.
 
-**"What channel count should I use?"** → Start with 1. Bump to 2-4 when profiling
-shows IO is the bottleneck. Past 8 is rarely worth it.
-
-**"Can I change channel count later?"** → Not in place. Requires copying data out and
-reimporting. Decide up front.
-
-**"How do I externalize only the directory?"** → Use a system property yourself:
-`Paths.get(System.getProperty("app.data.dir", "data"))`. Or rely on the full external
-config file.
-
-**"How do I verify my INI was loaded?"** → `EmbeddedStorageConfiguration.load(...)`
-returns the builder; `.createConfiguration().fileProvider().baseDirectory()` (approx.)
-shows what it resolved. Easier: log the settings after building.
-
-**"Can I run multiple managers with different configs?"** → Yes — each manager is
-independent. Different directories, same JVM.
-
-**"What's a sane housekeeping budget for a busy writer?"** → For write-heavy
-workloads in production, enable `housekeeping-adaptive` — it raises the budget
-automatically when GC falls behind, which is exactly the situation a fixed
-budget can't keep up with. The fixed default (`interval=1s`,
-`time-budget=10ms`) is sufficient for read-heavy or low-write apps. See
-"Best practices" above for the per-environment recommendation.
+**"What's a sane housekeeping budget for a busy writer?"** → For
+write-heavy production workloads, enable `housekeeping-adaptive` — it
+raises the budget automatically when GC falls behind. The fixed default
+(`interval=1s`, `time-budget=10ms`) is sufficient for read-heavy or
+low-write apps.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — every builder setter, property name, and involved
-  type (`StorageChannelCountProvider`, `StorageFileProvider`, `StorageBackupSetup`,
-  `StorageEntityCacheEvaluator`, `StorageDataFileEvaluator`, etc.).
-- `references/every-property.md` — the full property list with default, type,
-  description, and the type it configures.
-- `references/channel-count-tuning.md` — deep treatment of when to bump channels and
-  how to migrate.
-- `references/dev-test-staging-prod.md` — per-feature reasoning for the
-  best-practices table above, plus the rationale for each environment.
-- `references/examples-expanded.md` — six full config examples across formats.
-- `references/pitfalls-deep-dive.md` — each pitfall above with a minimal reproducer.
+- **Load `references/api-catalogue.md`** when you need the **full property
+  reference** — every setter mapped to its INI / YAML / XML property key,
+  type, default value, description, and the internal type it configures
+  (`StorageLiveFileProvider`, `StorageChannelCountProvider`,
+  `StorageHousekeepingController`, etc.). Also covers foundation-level
+  types (`StorageBackupSetup`, `StorageDataFileEvaluator`,
+  `StorageWriteController*`, …) for deep overrides.
+- **Load `references/channel-count-tuning.md`** when sizing channels for
+  a real workload (CPU / IO trade-offs) or **migrating an existing
+  database** to a different channel count.
+- **Load `references/dev-test-staging-prod.md`** when reasoning about
+  per-environment settings beyond the in-line table — *why* each row is
+  set the way it is, and what the failure modes are if you deviate.
+- **Load `references/examples-expanded.md`** when you want a complete
+  end-to-end config file in a specific format (INI, XML, YAML, JSON,
+  HOCON, programmatic).
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a config
+  bug — startup failure, unexpected defaults, channel-count mismatch,
+  housekeeping running too rarely, deletion directory filling up.
 
 ## Upstream sources
 

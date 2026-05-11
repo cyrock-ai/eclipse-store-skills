@@ -44,23 +44,43 @@ misleading disk usage.
 export, build a new directory with the new count, re-import. See
 `references/channel-count-tuning.md`.
 
-## 4. INI file not on classpath
+## 4. `load("/...")` with leading slash → `ConfigurationExceptionNoConfigurationFound`
 
 **Reproducer.**
 
 ```java
-EmbeddedStorageConfiguration.load("/storage.ini")
+EmbeddedStorageConfiguration.load("/META-INF/eclipsestore/storage.ini")
 ```
 
-…but `storage.ini` is in `src/main/resources/config/storage.ini`.
+The file is present at `src/main/resources/META-INF/eclipsestore/storage.ini`,
+but the call still throws:
 
-**Symptom.** `PersistenceException: configuration resource not found`.
+```
+ConfigurationExceptionNoConfigurationFound: No configuration found at:
+    /META-INF/eclipsestore/storage.ini
+```
 
-**Root cause.** `load(String)` treats the argument as a classpath path (leading slash
-or not — classpath semantics).
+**Root cause.** `EmbeddedStorageConfiguration.load(String)` delegates to
+`ConfigurationLoader.New(path)`, which calls `ClassLoader.getResource(path)`.
+**`ClassLoader.getResource` rejects `/`-prefixed paths** (unlike
+`Class.getResource`, which strips the leading slash). When classpath
+resolution fails, the loader falls back to URL and filesystem — neither
+matches either — and throws.
 
-**Fix.** Use the correct path: `/config/storage.ini`, or `ConfigurationLoader.New(file)`
-for file-system loading.
+**Fix.** Drop the leading slash:
+
+```java
+EmbeddedStorageConfiguration.load("META-INF/eclipsestore/storage.ini")
+```
+
+For filesystem loading from an absolute path, pass a `File`:
+
+```java
+EmbeddedStorageConfiguration.load(
+    ConfigurationLoader.New(new File("/etc/myapp/storage.ini")),
+    ConfigurationParserIni.New()
+);
+```
 
 ## 5. `~` in non-directory property
 
