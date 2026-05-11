@@ -66,14 +66,12 @@ import org.eclipse.store.storage.embedded.configuration.types.EmbeddedStorageCon
 
 public class FoundationBootstrap {
     public static EmbeddedStorageManager start(DataRoot root) {
-        EmbeddedStorageFoundation<?> foundation = EmbeddedStorage.Foundation(
-            EmbeddedStorageConfiguration.Builder()
-                .setStorageDirectory(Paths.get("data").toString())
-                .setChannelCount(4)                          // 4 parallel I/O channels
-                .setBackupDirectory("backup")                // continuous backup target
-                .setDeletionDirectory("deletion")            // where deleted files go
-                .createConfiguration()
-        );
+        EmbeddedStorageFoundation<?> foundation = EmbeddedStorageConfiguration.Builder()
+            .setStorageDirectory(Paths.get("data").toString())
+            .setChannelCount(4)                          // 4 parallel I/O channels
+            .setBackupDirectory("backup")                // continuous backup target
+            .setDeletionDirectory("deletion")            // where deleted files go
+            .createEmbeddedStorageFoundation();
 
         // Register a custom type handler before start, if needed:
         // foundation.onConnectionFoundation(cf ->
