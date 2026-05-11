@@ -536,23 +536,32 @@ GigaMap's invariants. Handle the duplicate at the domain level.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — full signatures for `GigaMap`, `GigaQuery`,
-  indexer abstractions, Lucene / vector / spatial APIs, sub-query helpers.
-- `references/query-dsl.md` — every query operator (`is`, `in`, `between`,
-  `before`, `.and`, `.or`, `.not`, `notIn`, multi-value `.all`, spatial
-  operators, predicates, scored-result handling).
-- `references/lucene.md` — `DocumentPopulator`, `LuceneContext`, query
-  syntax, sub-query semantics, backup considerations.
-- `references/vector-deep-dive.md` — design-side: embedded vs computed
-  mode, similarity function selection, HNSW parameter tuning, sub-query
-  semantics, presets, recall measurement, sharding past 2.1B.
-- `references/vector-operations.md` — operations-side: full
-  `VectorIndexConfiguration` parameter table, restart-safe wiring,
-  on-disk format + incremental mode, PQ compression, background tasks
-  + eventual-indexing consistency, operational checklist.
-- `references/examples-expanded.md` — realistic end-to-end programs (incl.
-  vector search, embedded-mode RAG-style retrieval, on-disk + PQ).
-- `references/pitfalls-deep-dive.md` — each pitfall above with reproducer.
+- **Load `references/api-catalogue.md`** when you need a method overload
+  or factory variant not in the in-line tables — e.g. additional
+  `GigaQuery` terminal ops, less common indexer `.Abstract<>` overloads,
+  spatial operators beyond `at`/`near`/`withinBox`, `EntityIdMatcher`
+  factory variants.
+- **Load `references/query-dsl.md`** when writing a query that goes
+  beyond the Pattern G examples — predicates on derived keys, complex
+  boolean trees, `notIn` semantics, scored-result chaining order.
+- **Load `references/lucene.md`** when wiring or operating Lucene full-text
+  search — Maven deps, `DocumentPopulator` shape, query syntax beyond
+  `field:term`, sub-query score handling, backup / lifecycle / restart.
+- **Load `references/vector-deep-dive.md`** when **designing** a vector
+  index — picking embedded vs computed mode, similarity function,
+  HNSW tuning, recall measurement, sharding past 2.1B vectors.
+- **Load `references/vector-operations.md`** when **operating** a vector
+  index — full `VectorIndexConfiguration` parameter table, restart-safe
+  wiring, on-disk format + incremental mode, PQ compression, background
+  tasks + eventual-indexing consistency, production checklist.
+- **Load `references/examples-expanded.md`** when you want a complete
+  end-to-end program template — entity + indices + root wiring +
+  storage start + queries, including the embedded-mode RAG retrieval
+  pattern.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a bug —
+  `BinaryPersistenceException`, `UniqueConstraintViolationException`,
+  stale query results after a setter call, reader-thread deadlock,
+  vectorizer null / thread-safety / dimension-mismatch errors.
 
 ## Upstream sources
 
