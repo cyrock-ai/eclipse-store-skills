@@ -347,16 +347,11 @@ and Lucene via `gigaMap.query(...).and(vectorSearchResult)` (intersection by
 id set, scores dropped). Inverting the chain — `vectorSearchResult.and(gigaQuery)`
 — returns a `ScoredSearchResult` that preserves scores.
 
-### Files on disk (per index)
+### Files on disk
 
-| File | Contents |
-|---|---|
-| `{name}.graph` | JVector `OnDiskGraphIndex` payload. May embed `InlineVectors` and `FusedPQ` features. |
-| `{name}.meta` | 24-byte sidecar: format version (currently 2), dimension, expected vector count, highest entity id. |
-
-Any mismatch on load triggers a silent rebuild from the source (`vectorStore`
-in computed mode, or by iterating `parentMap` in embedded mode). One-time
-cold-start cost; no data loss.
+`{name}.graph` (JVector `OnDiskGraphIndex`) + `{name}.meta` (24-byte
+sidecar). On-disk format, restart / incremental mode, mismatch rebuild
+semantics → `vector-operations.md § On-disk lifecycle`.
 
 ## Sub-queries
 

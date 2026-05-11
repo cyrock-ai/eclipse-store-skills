@@ -1,7 +1,9 @@
 # Vector index deep-dive — gigamap-jvector
 
-Companion to the SKILL.md vector section. Read this when designing the index
-shape (mode, on-disk, PQ, eventual indexing) or tuning recall vs. latency.
+Companion to the SKILL.md vector section. Read this when designing the
+index shape (mode, similarity, HNSW tuning) or reasoning about recall vs.
+latency. For configuration parameters, lifecycle, on-disk format, PQ,
+background tasks, and the operational checklist → `vector-operations.md`.
 
 ## 1. Mode selection: embedded vs computed
 
@@ -17,13 +19,48 @@ the index from scratch.
 | API call cost on restart | None — vector reloaded with the entity | None — `vectorStore` reloads with the GigaMap |
 | Right when | The embedding is part of the entity's identity (e.g. you ingest pre-computed embeddings, you stream from a Kafka topic that includes vectors) | The embedding is computed by an external service (OpenAI, sentence-transformers running in another process), or it's expensive to compute and you don't want to redo it |
 | Memory profile under search load | Stable — vectors aren't duplicated | Slightly higher — `vectorStore` is paged in for the segments touched |
-| Update cost | Slightly degraded recall until next `optimize()` (see Pitfall 20) | Clean — `VectorEntry` swapped in `vectorStore`, graph updated normally |
+| Update cost | Slightly degraded recall until next `optimize()` | Clean — `VectorEntry` swapped in `vectorStore`, graph updated normally |
 
 **Heuristic.** If your domain object would naturally carry the vector (a doc
 record with `text` and `embedding`), pick embedded. If the vector is "extra
 metadata bolted on by an external service", pick computed.
 
-## 2. Similarity function selection
+### Vectorizer contract
+
+`Vectorizer.vectorize()` **must be thread-safe** — multiple build / search
+threads call it concurrently on the same instance — and **must never return
+`null`** for an entity that's present (throws `IllegalStateException` at
+insert time). Override `vectorizeAll(List<E>)` to batch-vectorize against
+APIs that support it (e.g. OpenAI's `input: ["a", "b", "c"]` form) — the
+default loops one at a time.
+
+## 2. Search API — overloads beyond `search(query, k)`
+
+```java
+// Top-k similar to an existing entity ("more like this") — convenience overload
+VectorSearchResult<Doc> similar = embeddings.search(someDoc, 10);
+
+// Override search-time beam width per query (latency vs recall)
+VectorSearchResult<Doc> highRecall = embeddings.search(queryVector, 10, 200);
+
+// Round-trip a stored vector by entity id
+float[] stored = embeddings.getVector(docs.add(new Doc(...)));
+```
+
+## 3. Design-time limits
+
+- **~2.1 billion vectors per index.** JVector uses `int` for graph node
+  ordinals. Shard across multiple `VectorIndex` instances if you exceed
+  it (see Sharding section below).
+- **Dimension is fixed at build.** Mixing 768-dim and 1024-dim throws on
+  `add`. Changing dimension means a new index name + rebuild.
+- **PQ compression silently sets `maxDegree=32`** (FusedPQ requirement).
+  Don't fight it — pick PQ or `maxDegree`, not both.
+- **`eventualIndexing=true` decouples vector-store writes from graph
+  mutations.** Search may miss recent adds until the queue drains; see
+  `vector-operations.md` for consistency-checkpoint semantics.
+
+## 4. Similarity function selection
 
 | Function | Best for | Notes |
 |---|---|---|
@@ -33,7 +70,7 @@ metadata bolted on by an external service", pick computed.
 
 If your model documentation doesn't say, default to `COSINE`.
 
-## 3. HNSW parameter tuning
+## 5. HNSW parameter tuning
 
 Two numbers dominate: `maxDegree` (graph connectivity) and `beamWidth`
 (build-time fan-out).
@@ -79,122 +116,7 @@ These tune the construction-time pruning. Defaults (`alpha=1.2`,
 `neighborOverflow=1.2`) are fine for most workloads. Move them only if
 you've validated against a benchmark.
 
-## 4. On-disk lifecycle
-
-Two files per index, named after the index:
-
-- `{name}.graph` — JVector `OnDiskGraphIndex` payload. Memory-mapped on load.
-- `{name}.meta` — 24-byte sidecar: format version, dimension, expected count,
-  highest entity id.
-
-### Restart behaviour
-
-On startup with `onDisk=true` and existing files:
-
-1. `tryLoad()` checks both files.
-2. Read `.meta` and verify all four fields against the live state.
-3. Any mismatch → return `false`, fall back to a full rebuild from
-   `vectorStore` (computed mode) or by iterating `parentMap` (embedded mode).
-4. On match → memory-map the `.graph`, mark PQ as trained if `FusedPQ` is
-   embedded, enter **incremental on-disk mode**.
-
-### Incremental on-disk mode
-
-After a successful disk load:
-
-- The disk graph serves searches.
-- New mutations go to a fresh in-memory builder (delta graph).
-- Removed/updated ordinals are tracked in `diskDeletedOrdinals` so disk-side
-  search filters them out.
-- Searches **merge** results from the disk graph and the in-memory delta,
-  taking the global top-k.
-
-The next `persistToDisk()` exits incremental mode (full rebuild from source
-into a single in-memory graph), writes that graph to disk, and re-enters
-incremental mode for the next batch of mutations.
-
-This is invisible to user code — it's transparently efficient when
-mutation volume is low between persists.
-
-### Format version migrations
-
-`{name}.meta` carries a format version. Bumping it (e.g. from v1 to v2,
-which added `highestEntityId` to catch count-collision corruption) silently
-invalidates older files: they are rebuilt on first load. **One-time
-cold-start cost, no data loss.** Plan for it on upgrade.
-
-## 5. PQ compression
-
-Product Quantization compresses each vector into a sequence of small
-codebook indices. A 768-float vector (3 KB) collapses to ~192 bytes.
-
-- HNSW operates on **compressed** codes for fast candidate scoring.
-- A reranking pass over the **exact** vectors — pulled from `InlineVectors`
-  embedded in the `.graph` file — produces the final top-k.
-
-Trade-offs:
-
-| Aspect | Without PQ | With PQ |
-|---|---|---|
-| Memory (graph) | Full vectors loaded for distance | Compressed codes; ~16× smaller |
-| Recall | Highest | Slightly lower (depends on `pqSubspaces`) |
-| Search latency | Lower per node | Faster scan, slower rerank |
-| Build time | Faster | Slower (codebook training) |
-| `maxDegree` | Free | Forced to 32 by FusedPQ |
-| When to use | < 1M vectors, RAM headroom | > 1M vectors, RAM-constrained |
-
-`pqSubspaces` defaults to `dimension / 4`. It must divide the dimension
-evenly. Higher = larger codebook, more memory, better recall.
-
-## 6. Background tasks
-
-`gigamap-jvector` runs three optional workloads on a single daemon thread
-named `VectorIndex-Background-{name}`:
-
-- **Indexing queue** (eventual indexing): drains the deferred-mutation
-  queue, applying graph adds/updates/removes.
-- **Optimization**: runs `cleanup()` periodically — removes excess
-  neighbours accumulated during construction, improves query latency.
-- **Persistence**: writes the on-disk graph + meta files.
-
-Each is enabled by setting its interval to `> 0`:
-
-```java
-.eventualIndexing(true)
-.optimizationIntervalMs(60_000)        // 1 min
-.minChangesBetweenOptimizations(1000)
-.persistenceIntervalMs(30_000)         // 30 s
-.minChangesBetweenPersists(100)
-```
-
-The thresholds (`minChangesBetween*`) prevent thrash: if nothing has changed
-since the last run, the periodic check is a no-op.
-
-### Eventual indexing — consistency model
-
-With `eventualIndexing=true`:
-
-- `gigaMap.add(entity)` updates `vectorStore` synchronously (data is
-  durable; restart sees it).
-- Graph mutation is **queued** for the background thread.
-- Search may not see the change for the queue-drain interval.
-
-`optimize()`, `persistToDisk()`, and `close()` all drain the queue first
-before doing their main work — they're consistency checkpoints.
-
-If you need read-your-write semantics on every search, leave
-`eventualIndexing` at the default `false`. The trade-off is higher add
-latency under sustained write load.
-
-### `persistOnShutdown` corner case
-
-If you have **no background features enabled** (no `eventualIndexing`, no
-background optimize, no background persist) but `persistOnShutdown=true`
-and `onDisk=true`, `close()` falls through to a direct `persistToDisk()`
-call. Without that fall-through, in-memory changes would be silently
-dropped. This was a real bug fixed in upstream commit `fa189228`.
-
-## 7. Search semantics with sub-queries
+## 6. Search semantics with sub-queries
 
 `VectorSearchResult<E>` is both:
 
@@ -231,7 +153,7 @@ ScoredSearchResult<Doc> ranked =
               .and(lucene.search("\"distributed systems\"", 200));
 ```
 
-## 8. Choosing the right preset
+## 7. Choosing the right preset
 
 | Workload | Preset |
 |---|---|
@@ -252,7 +174,7 @@ VectorIndexConfiguration cfg = VectorIndexConfiguration
     .build();
 ```
 
-## 9. Recall measurement
+## 8. Recall measurement
 
 Don't assume — measure. Recall is the fraction of true top-k neighbours
 your index returns; it depends on data distribution and parameters.
@@ -280,7 +202,7 @@ For benchmark numbers on 10K × 128-dim clustered data, see the
 `gigamap-jvector` README — recall@10 ≈ 94.3% with default parameters,
 ~10K QPS, p99 latency < 0.2 ms.
 
-## 10. Sharding past 2.1B
+## 9. Sharding past 2.1B
 
 Single-index ceiling: `Integer.MAX_VALUE` ordinals. Past that, shard:
 
@@ -300,21 +222,3 @@ List<Entry<E>> merged = mergeTopK(all, k);
 Either separate `VectorIndex` instances on the same `GigaMap`, or separate
 `GigaMap` instances per shard — the second scales better past several
 shards because GigaMap segment locks aren't shared.
-
-## 11. Operational checklist
-
-Before shipping a vector index to production:
-
-- [ ] JVM started with `--add-modules jdk.incubator.vector`.
-- [ ] Java 20+ (21 LTS recommended) for full SIMD acceleration.
-- [ ] `dimension` matches the embedding model exactly.
-- [ ] `Vectorizer.vectorize()` is thread-safe (no shared mutable state).
-- [ ] `Vectorizer.vectorize()` cannot return `null` for entities you'll add.
-- [ ] If `> 1M` vectors, `onDisk=true` with a backed-up `indexDirectory`.
-- [ ] If RAM-constrained, `enablePqCompression(true)` (accept `maxDegree=32`).
-- [ ] Background `persistenceIntervalMs` set if you can't tolerate restart
-      cold-start cost.
-- [ ] Recall measured on a held-out set, not assumed.
-- [ ] Backup strategy covers the `indexDirectory` alongside the EclipseStore
-      `storage/` directory.
-- [ ] Monitoring on add latency and search latency p50/p99.
