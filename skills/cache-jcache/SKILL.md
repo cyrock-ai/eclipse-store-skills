@@ -27,48 +27,13 @@ description: >
   "EvictionPolicy.LeastRecentlyUsed", "CacheLoader", "CacheWriter",
   "read-through", "write-through", "cache-aside", "JMX cache stats",
   or "spring.jpa.properties.hibernate.cache.eclipsestore".
-version: 0.3.0
+version: 0.4.0
 ---
 
 # Eclipse Store — JCache (JSR-107) Cache
 
-Eclipse Store ships a JCache (JSR-107) provider. Use it as a drop-in
-replacement for any other JCache implementation, with optional backing by an
-`EmbeddedStorageManager` so entries survive restarts. Integrates with Hibernate
-L2 cache and Spring Cache.
-
-## When to use this skill
-
-**Design-time triggers (apply proactively):**
-
-- User is **adding a service / repository / facade method** with an
-  expensive read (DB query, HTTP call, expensive compute) — flag the
-  cache-aside vs. read-through decision *before* the method signature is
-  committed.
-- User is about to add `@Cacheable` / `@CacheEvict` / `@CachePut` on a
-  Spring `@Service` — pin the JCache provider and decide ephemeral vs.
-  storage-backed *now*.
-- User is **designing a Hibernate model / aggregate** and L2 caching is
-  potentially load-bearing for read-heavy entities.
-- User is **comparing cache providers** (Caffeine / Ehcache / Infinispan)
-  and wants to know whether Eclipse Store JCache fits.
-- User is **deciding whether cached entries should survive a JVM restart**
-  — that is the storage-backed-vs-standalone decision and it must be
-  made at config time.
-- User is sketching a **near-cache topology** (fast local cache in front
-  of a durable cache).
-
-**Reactive triggers:**
-
-- User types `CachingProvider`, `CacheManager`, `Cache<K,V>`, `@Cacheable`,
-  `JCacheManagerCustomizer`, `MutableConfiguration`,
-  `CacheConfiguration.Builder`, `CacheConfiguration.load`,
-  `EvictionManager`, `EvictionPolicy`.
-- User asks how to wire Hibernate L2 to Eclipse Store.
-- User asks why their cache loses entries on restart.
-- User asks how to set TTL, evict, or measure hit rate.
-- User asks about `eclipsestore-cache.properties` or
-  `eclipsestore.cache.configuration.path`.
+JSR-107 provider with optional persistence via `EmbeddedStorageManager`.
+Integrates with Hibernate L2 cache and Spring Cache.
 
 ## Do NOT use this skill
 
@@ -85,10 +50,7 @@ L2 cache and Spring Cache.
 
 ## Mental model
 
-JCache defines a `Cache<K,V>` — a map-like API with expiry, listeners, and
-statistics. Providers plug in; Eclipse Store's provider is one.
-
-Two uses:
+Two uses of Eclipse Store as a JSR-107 provider:
 
 1. **Standalone JCache** — a pure in-memory cache (not persistent) using the
    JCache standard `MutableConfiguration`. Use as a drop-in replacement for
@@ -102,7 +64,7 @@ A storage-backed cache **automatically acts as both `CacheReader` and
 miss, the entry is loaded from storage; on `put`, it is written through.
 You do not need to also configure a `CacheLoader` / `CacheWriter` to get
 that behavior — it is built in. (You *can* layer your own `CacheLoader` for,
-e.g., a database read-through; see Pattern H.)
+e.g., a database read-through; see Pattern I.)
 
 Eclipse Store's `Cache<K,V>` and `CacheManager` extend the JCache types, so
 they slot in anywhere a `javax.cache.Cache` / `javax.cache.CacheManager` is
@@ -165,6 +127,7 @@ Eclipse Store-specific (package `org.eclipse.store.cache.types`):
 | `.build()` | Returns `CacheConfiguration<K,V>`. |
 | `Cache<K,V>` (Eclipse Store) | Adds `size()`, `putSilent(k,v)`, `unwrap(...)`. |
 | `CacheManager` (Eclipse Store) | Adds `removeCache(name)`. |
+| `org.eclipse.store.cache.types.CacheStatisticsMXBean` | Returned by `cache.unwrap(CacheStatisticsMXBean.class)`. **Extends** `javax.cache.management.CacheStatisticsMXBean` — either FQN works as the `unwrap` target; the Eclipse Store one is a strict superset. |
 | `EvictionManager.OnEntryCreation(policy)` | Evict on every put. |
 | `EvictionManager.Interval(policy, intervalMs)` | Evict periodically. |
 | `EvictionPolicy.LeastRecentlyUsed(maxSize)` | LRU policy. |
@@ -174,6 +137,21 @@ Eclipse Store-specific (package `org.eclipse.store.cache.types`):
 | `CacheConfigurationPropertyNames` | Constants for the properties-file keys. |
 
 ## Idiomatic patterns
+
+**Start here** — pick by the decision the user is making:
+
+| If… | Use |
+|---|---|
+| In-memory only, JVM restart clears the cache | Pattern A (standalone) |
+| Entries must survive restart | Pattern B (storage-backed) |
+| Read-through to a non-storage source (DB, HTTP) | Pattern I (`CacheLoader`) |
+| Plain cache-aside in service code | Pattern C (manual) |
+| Spring `@Cacheable` integration | Pattern G |
+| Hibernate second-level cache | Pattern H |
+| Config from `eclipsestore-cache.properties` | Pattern J |
+
+Patterns D (expiry), E (listeners), F (eviction) are orthogonal — combine
+with whichever base pattern fits.
 
 ### Pattern A — Standalone (in-memory) JCache
 
@@ -227,7 +205,40 @@ cache.put(1, "persists across restarts");
 (2) `CacheConfiguration` extends `javax.cache.configuration.CompleteConfiguration`,
 so it can be passed directly to `cacheManager.createCache(name, cfg)`.
 
-### Pattern C — Expiry policies
+**Method naming — builder vs `MutableConfiguration`.** The Eclipse Store
+`CacheConfiguration.Builder` uses **unprefixed fluent** methods
+(`.expiryPolicyFactory(...)`, `.storeByValue(...)`, `.readThrough(true)`,
+`.enableStatistics()`). The JCache `MutableConfiguration` (Pattern A)
+uses **JavaBeans setters** (`.setExpiryPolicyFactory(...)`,
+`.setStoreByValue(...)`, etc.). Pick one configuration shape per cache;
+do not mix.
+
+**Teardown order.** Close `cacheManager` (and any individual `Cache`s
+via `cacheManager.close()`) **before** `storage.shutdown()`. Storage-backed
+`writeThrough` is synchronous, so no explicit flush is needed — closing the
+cache simply releases its handles before the storage closes.
+
+### Pattern C — Manual cache-aside (without Spring)
+
+Plain cache-aside against any cache (standalone or storage-backed). The
+`@Cacheable` semantics from Pattern F, written by hand:
+
+```java
+public Product findBySku(String sku) {
+    Product hit = cache.get(sku);
+    if (hit != null) return hit;
+    Product loaded = db.load(sku);    // or any expensive source
+    if (loaded != null) cache.put(sku, loaded);
+    return loaded;
+}
+```
+
+For a JSR-107 `read-through` setup that auto-loads on miss, plug a
+`CacheLoader` and set `readThrough(true)` — see Pattern I. Cache-aside is
+the simpler option when the data source isn't a `CacheLoader`-compatible
+thing (e.g. an arbitrary service method).
+
+### Pattern D — Expiry policies
 
 From `javax.cache.expiry`:
 
@@ -248,7 +259,7 @@ cfg.setExpiryPolicyFactory(AccessedExpiryPolicy.factoryOf(
 Pick one per cache; usually `ModifiedExpiryPolicy` or `CreatedExpiryPolicy`.
 Beware the storage-backed expiry-after-restart quirk (Pitfall 1).
 
-### Pattern D — Entry listeners
+### Pattern E — Entry listeners
 
 Notify on create / update / remove / expire:
 
@@ -272,7 +283,7 @@ cfg.addCacheEntryListenerConfiguration(listenerCfg);
 Listeners are synchronous by default — a slow listener throttles cache
 operations.
 
-### Pattern E — Eviction (LRU / LFU / FIFO)
+### Pattern F — Eviction (LRU / LFU / FIFO)
 
 `EvictionPolicy` decides *which* entries to evict; `EvictionManager` decides
 *when* to evict (on every put, or on a timer):
@@ -303,12 +314,12 @@ The `Interval` variant uses a background sweeper; `OnEntryCreation`
 piggybacks on inserts. `Interval` smooths latency; `OnEntryCreation`
 caps memory more aggressively.
 
-### Pattern F — Spring `@Cacheable` with Eclipse Store
+### Pattern G — Spring `@Cacheable` with Eclipse Store
 
 Wire caches through a `JCacheManagerCustomizer` bean. For a storage-backed
 cache, constructor-inject the `EmbeddedStorageManager` — that ordering
 guarantee is what keeps the customizer from running before the storage
-bean exists (see Pitfall 8).
+bean exists (see Pitfall 2).
 
 ```java
 @Configuration
@@ -344,7 +355,7 @@ public class CustomerService {
 }
 ```
 
-### Pattern G — Hibernate second-level cache
+### Pattern H — Hibernate second-level cache
 
 Add `cache-hibernate` and point the region factory at Eclipse Store's
 `CacheRegionFactory` — that single property is the whole wiring:
@@ -360,7 +371,7 @@ Eclipse Store-specific Hibernate options live under
 `missing_cache_strategy=create`). Per-region expiry / eviction follows
 standard Hibernate region settings.
 
-### Pattern H — Read-through / write-through with `CacheLoader`
+### Pattern I — Read-through / write-through with `CacheLoader`
 
 A storage-backed cache is already read- and write-through *to its storage*.
 For read-through to a **different** system of record (e.g. a relational
@@ -385,7 +396,7 @@ CacheConfiguration<String, Customer> cfg = CacheConfiguration
 
 Mirror with `cacheWriterFactory(...)` + `writeThrough(true)` for write-through.
 
-### Pattern I — Loading config from a properties file
+### Pattern J — Loading config from a properties file
 
 Eclipse Store cache parses a small INI-style properties file. Drop it on
 the classpath as `eclipsestore-cache.properties` (or set the system
@@ -455,7 +466,10 @@ Caching.getCachingProvider("org.eclipse.store.cache.types.CachingProvider");
    app restarts and an entry is later requested, it is loaded from storage
    and given a *new* expiry counter — even if the original creation was
    hours/days ago. Quoted directly from `configuration/storage.adoc`. See
-   `references/pitfalls-deep-dive.md` for mitigation.
+   `references/pitfalls-deep-dive.md` for mitigation. Note: a load-through
+   miss after restart counts as a **cache miss + a load** in JSR-107 stats
+   (not a hit) — `cache.unwrap(CacheStatisticsMXBean.class).getCacheMisses()`
+   increments.
 2. **`JCacheManagerCustomizer` runs before `EmbeddedStorageManager`.**
    Without constructor-injecting the storage bean, the customizer NPEs or
    wires a vanilla in-memory cache.
@@ -467,7 +481,10 @@ Caching.getCachingProvider("org.eclipse.store.cache.types.CachingProvider");
    also on the classpath. Pin with `spring.cache.jcache.provider=…`.
 5. **Statistics are off by default.** `cfg.setStatisticsEnabled(true)` (or
    builder `.enableStatistics()`); read via
-   `cache.unwrap(CacheStatisticsMXBean.class)`.
+   `cache.unwrap(javax.cache.management.CacheStatisticsMXBean.class)`
+   (or the Eclipse Store-specific subtype
+   `org.eclipse.store.cache.types.CacheStatisticsMXBean` — both `unwrap`
+   targets resolve to the same instance).
 6. **Listeners execute synchronously unless configured otherwise.** Slow
    listeners throttle puts/gets — set `synchronous=false` on the
    `MutableCacheEntryListenerConfiguration`.
@@ -486,44 +503,22 @@ Caching.getCachingProvider("org.eclipse.store.cache.types.CachingProvider");
 - **`gigamap`** — unrelated in purpose; a cache is ephemeral, a GigaMap is
   a long-lived indexed collection.
 
-## Recipes
-
-**"How do I persist cache entries?"** → Back the configuration with an
-`EmbeddedStorageManager`. Same storage as the main data graph, or a
-separate one — either works.
-
-**"Can my cache values be non-`Serializable`?"** → Yes. Use
-`storeByReference()`.
-
-**"How do I read-through to a database?"** → `cacheLoaderFactory(...)` +
-`readThrough(true)`. See Pattern H. Mirror with `cacheWriterFactory(...)` +
-`writeThrough(true)` for write-through.
-
-**"How do I use it with Spring `@Cacheable`?"** → `@EnableCaching` +
-`JCacheManagerCustomizer` bean. See Pattern F.
-
-**"How do I use it as Hibernate L2?"** → `cache-hibernate` artifact +
-`hibernate.cache.region.factory_class=...CacheRegionFactory`. See
-Pattern G.
-
-**"Why does my TTL'd cache entry come back to life after a JVM restart?"**
-→ Expected behavior of storage-backed caches; the expiry counter resets on
-load. See Pitfall 1 / `references/pitfalls-deep-dive.md`.
-
-**"Can I configure from a properties file?"** → Yes:
-`CacheConfiguration.load("cache-config.properties", K.class, V.class)`.
-Default file is `eclipsestore-cache.properties` on the classpath, override
-via system property `eclipsestore.cache.configuration.path`.
-
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — full Eclipse Store + JCache API tables,
-  property keys, and integration matrices.
-- `references/examples-expanded.md` — end-to-end examples (standalone,
-  storage-backed, listeners, Spring Boot, Hibernate, read-through,
-  properties file).
-- `references/pitfalls-deep-dive.md` — each pitfall with a reproducer and
-  fix.
+- **Load `references/api-catalogue.md`** when you need a method overload,
+  property-file key, or builder/setter beyond the in-line tables — e.g.
+  every `CacheConfiguration.Builder` method, the full `EvictionPolicy`
+  factory list, `CacheConfigurationPropertyNames` constants, or
+  Hibernate region-factory specifics.
+- **Load `references/examples-expanded.md`** when you want a complete
+  end-to-end program template — standalone JCache app, storage-backed
+  app, listener setup, Spring Boot `JCacheManagerCustomizer`, Hibernate
+  L2 wiring, read-through with `CacheLoader`, or properties-file config.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a bug —
+  cache empty after restart, `UniqueConstraintViolationException`,
+  listener-blocking-puts, statistics returning zero, provider-mismatch
+  on Spring auto-config, or storage-backed cache replaced by Spring's
+  in-memory default.
 
 ## Upstream sources
 
