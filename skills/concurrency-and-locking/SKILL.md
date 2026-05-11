@@ -26,143 +26,85 @@ description: >
   "gigaMap.store vs storageManager.store", "iterators leaking read locks",
   "stress-test concurrent writes", or asks why a multi-threaded app is
   producing inconsistent state on disk.
-version: 0.2.0
+version: 0.3.0
 ---
 
 # Eclipse Store — Concurrent Access and Locking
 
-Eclipse Store loads your object graph directly into the JVM heap — it is the same
-graph you read, mutate, and persist. There is no defensive copy, no session-scoped
-cache, no proxy. That is what makes the library fast, and it is also why **the
-application is responsible for synchronizing concurrent access**. The library
-cannot do it for you because the library is not in the read/write path.
+The application owns thread-safety: the library is not in the read/write
+path, so it cannot lock the graph for you.
 
-This skill is the canonical treatment of that responsibility: the single rule, the
-thread-safety matrix, the strategies, the GigaMap-specific story, and the pitfalls.
+## Do NOT use this skill
 
-## When to use this skill
-
-**Design-time triggers (apply proactively, even without explicit concurrency keywords):**
-
-- User is designing or reviewing the **object model / root aggregate** that
-  Eclipse Store will persist — locking decisions shape which fields belong on
-  which aggregate, whether collections are mutable in place, and where natural
-  lock boundaries fall.
-- User is designing or extending a **service, repository, facade, or
-  controller layer** that reads from or mutates the object graph. Every such
-  method is implicitly a critical section under the "mutate + store under the
-  same lock" rule, so the locking strategy must be chosen alongside the API,
-  not bolted on later.
-- User is introducing a new **entity, sub-aggregate, or `GigaMap`** under the
-  root, or splitting an existing one.
-- User is wiring Spring beans that touch persistent state (`@Service`,
-  `@Repository`, `@Component`) — `@Read` / `@Write` / `@Mutex` placement is
-  part of the bean's contract.
-- Code review surfaces a `store(...)` call, a graph mutation, or an iterator
-  over persistent state — verify it sits inside the right lock scope.
-
-**Reactive triggers (user is already aware of a concurrency concern):**
-
-- User has a multi-threaded app (web request handlers, scheduled jobs, background
-  workers) hitting the same `EmbeddedStorageManager`.
-- User reports `ConcurrentModificationException` during `store()` serialization.
-- User asks whether a particular API is thread-safe.
-- User is choosing between `synchronized`, `ReentrantReadWriteLock`,
-  `LockedExecutor`, striped locking, or Spring `@Read`/`@Write`/`@Mutex`.
-- User is mixing `gigaMap.store()` and `storageManager.store(gigaMap)` and
-  hitting inconsistent state.
-- User is sharing a `Storer` across threads.
-- User wants a stress-test pattern for concurrency regressions.
-
-**Route elsewhere** when:
-
-- User has a single-threaded app — the rule still applies in principle, but no
-  locks are needed. Stick with `storing-data`.
-- User is configuring the lock *file* (process-level lock that prevents two JVMs
-  from opening the same storage) → `configuration`. That is unrelated to
-  application-level concurrency.
-- User wants the Spring AOP setup details → `spring-boot`. Conceptual rules live
-  here; the bean wiring lives there.
+- Single-threaded app — rule still applies in principle but no locks
+  needed → `storing-data`.
+- Process-level lock *file* (preventing two JVMs opening the same storage)
+  → `configuration`. Unrelated to thread-level locking.
+- Spring AOP bean wiring details → `spring-boot`. Conceptual rules live
+  here; wiring lives there.
 
 ## Mental model — the single invariant
 
-Modifying the object graph and the corresponding `store()` call **must happen
-under the same lock**. Concretely, a thread that mutates the graph must hold a
-lock that spans:
+Mutating the object graph and the matching `store()` call **must happen
+under the same lock**. The lock spans both:
 
-1. the mutation itself (the assignment, the `add()`, the field update), and
+1. the mutation (assignment, `add()`, field update), and
 2. the `store(...)` call that persists it.
 
-No other thread may execute either step on the affected objects until both are
-complete.
-
-This is the same atomicity guarantee any in-memory shared data structure
-requires in Java. The only difference is that with Eclipse Store the second
-step — `store()` — is **part of the critical section**, not an afterthought
-handed to a transaction manager.
-
-### Why this differs from JDBC / JPA / ORMs
-
-Most persistence frameworks insulate the application from the data store by
-copying values across a boundary: JDBC returns primitive `ResultSet` values;
-JPA hydrates entities into a session-scoped cache; ORMs hand back fresh proxies.
-The application mutates a *copy*; concurrency between threads is mediated by
-the database's transaction isolation.
-
-Eclipse Store has no copy step. The graph you load is the graph you mutate is
-the graph you persist. The framework is not in the read/write path, so the
-framework cannot lock around it — your application must.
-
-## The three failure modes (recognise these in incident logs)
-
-1. **Partial reads.** Thread A is halfway through a multi-step mutation. Thread
-   B reads the graph and sees an internally inconsistent intermediate state —
-   a `Customer` with updated address but stale audit log, an order whose line
-   items no longer sum to its total.
-2. **Persisted-graph divergence.** Thread A mutates but has not yet called
-   `store()`. Thread B grabs the lock, mutates, and stores. Thread A resumes
-   and stores — but the graph it persists already includes B's changes. The
-   persisted state diverges from what either thread "intended".
-3. **GigaMap stored in inconsistent state.** Calling `storageManager.store(gigaMap)`
-   while another thread is mutating the GigaMap walks a structure that is
-   changing under it; the store fails. (`gigaMap.store()` does not have this
-   problem — see [GigaMap concurrency](#gigamap-concurrency).)
+No other thread may execute either step on the affected objects until
+both are complete. This is plain in-memory Java concurrency — the only
+twist is that `store()` is **part** of the critical section, not handed
+off to a transaction manager.
 
 ## Thread-safety matrix
 
-The boundary between "library handles it" and "you handle it" is at the object
-graph: the library locks its internal I/O machinery; you lock the graph it
-serializes.
-
 | Component | Thread-safe? | Notes |
 |---|---|---|
-| `EmbeddedStorageManager` (I/O) | yes | Handles channel I/O, housekeeping, file locking internally. The application's view of the graph it persists is **not** thread-safe — that is your job. |
-| Storage channels | yes | Internal I/O threads that parallelize file reads/writes. **Not** an application-level concurrency primitive — they do not synchronize access from your application threads. |
-| `EmbeddedStorageManager.store(...)` | atomic for **durability** only | Each `store()` is an all-or-nothing write on disk. This is *durability* atomicity, not RAM isolation. The in-memory graph the store traverses is **not** protected from concurrent mutation. |
-| `GigaMap` operations (`add`, `remove`, `update`, `get`, `apply`) | yes | Each acquires the GigaMap's internal read-write lock. Iterators must be closed (try-with-resources) so the read lock is released. |
-| `gigaMap.store()` vs `storageManager.store(gigaMap)` | only `gigaMap.store()` | The former is a `synchronized` method (intrinsic monitor on the GigaMap instance) that holds the lock for the duration of the store; the latter bypasses it. **Always prefer `gigaMap.store()`.** |
-| `Lazy<T>.get()` | yes | Concurrent calls are safe. The background clearing thread uses `WeakReference` and cannot reclaim a reference still held by application code. |
-| `Cache<K, V>` (cache module) | yes | JCache contract; thread-safe by JSR-107 spec. |
-| `Serializer` instances | **no** | Confine to a single thread. The `SerializerFoundation` is safe to share. |
-| `Storer` (`createStorer`, `createLazyStorer`, `createEagerStorer`) | **no** | A `Storer` is a per-thread unit of work. Each thread that wants to store concurrently must obtain its own from the manager — they must not be shared. |
-| The application's object graph | **no** | Plain Java objects in the heap. Concurrent access must be synchronized by the application. |
+| `EmbeddedStorageManager` (I/O) | yes | Internal channel I/O / housekeeping / file locking. Graph it persists is **not** safe — application's job. |
+| Storage channels | yes | Internal I/O parallelism. **Not** an application-level concurrency primitive. |
+| `EmbeddedStorageManager.store(...)` | atomic for **durability** only | All-or-nothing on disk. In-memory graph not protected from concurrent mutation. |
+| `GigaMap` ops (`add` / `remove` / `update` / `get` / `apply`) | yes | Each acquires GigaMap's internal RW lock. Iterators must be try-with-resources. |
+| `gigaMap.store()` vs `storageManager.store(gigaMap)` | only `gigaMap.store()` | The former is `synchronized` on the GigaMap; the latter bypasses. **Always prefer `gigaMap.store()`.** |
+| `Lazy<T>.get()` | yes | Concurrent calls safe. Background-clearing thread won't reclaim a still-held reference. |
+| `Cache<K, V>` (cache module) | yes | JCache contract. |
+| `Serializer` | **no** | Confine to a single thread. `SerializerFoundation` is safe to share. |
+| `Storer` (`createStorer` / `createLazyStorer` / `createEagerStorer`) | **no** | Per-thread unit of work. Each thread that stores concurrently gets its own. |
+| Application's object graph | **no** | Plain Java objects. Your synchronization. |
 
-The lock *file* (proprietary file-lock that prevents two JVMs from opening the
-same storage) is **unrelated** to application-level concurrency. It is process
-serialization, not thread serialization.
+## Package quick-reference
+
+| Symbol | Package |
+|---|---|
+| `XThreads`, `LockedExecutor`, `LockScope`, `StripeLockedExecutor`, `StripeLockScope` | `org.eclipse.serializer.concurrency` |
+| `Action`, `Producer<R>` | `org.eclipse.serializer.functional` |
+| `@Read`, `@Write`, `@Mutex`, `LockAspect` | `org.eclipse.store.integrations.spring.boot.types.concurrent` |
+
+`Action` is a `@FunctionalInterface` with `void execute()`. `Producer<R>`
+is `@FunctionalInterface` with `R produce()`. They're Eclipse-Serializer
+equivalents of `Runnable` / `Supplier<R>`.
 
 ## Strategies, simple → advanced
 
-Pick one and apply it consistently per protected region. Mixing strategies on
-the same data is a common source of subtle bugs — a `synchronized` block on
-the root and a `LockedExecutor` covering the same data do **not** serialise
-against each other.
+**Default: `LockedExecutor` (least boilerplate, RW semantics).** Fall back
+to a manual `ReentrantReadWriteLock` when you need lock objects passed
+around explicitly, to coarse `XThreads.executeSynchronized` for one-off
+scripts or low-contention apps, to `StripeLockedExecutor` only after
+profiling shows contention crossing aggregate boundaries, and to Spring
+`@Read`/`@Write`/`@Mutex` when the codebase is already Spring-AOP-wired.
 
-### Coarse-grained synchronization
+Pick one and apply it consistently per protected region. Mixing
+strategies on the same data does **not** serialise — a `synchronized`
+block and a `LockedExecutor` covering the same graph race against each
+other.
 
-Wrap every read and every write in the same lock. Eclipse Store provides
-`XThreads.executeSynchronized(Runnable)`; the JDK equivalent is `synchronized`
-on a shared monitor.
+### Coarse — `XThreads.executeSynchronized`
+
+`org.eclipse.serializer.concurrency.XThreads` — global monitor.
+
+| Method | Returns |
+|---|---|
+| `XThreads.executeSynchronized(Runnable)` | `void` |
+| `XThreads.executeSynchronized(Supplier<T>)` | `T` |
 
 ```java
 XThreads.executeSynchronized(() -> {
@@ -171,14 +113,11 @@ XThreads.executeSynchronized(() -> {
 });
 ```
 
-Correct, simplest. Throughput suffers because only one thread runs at a time,
-regardless of read vs write. Right for low-contention apps or when reads do not
-dominate.
+Simplest. One thread at a time globally — fine for low contention.
 
 ### `ReentrantReadWriteLock`
 
-Most apps read far more than they write. RW locking lets multiple readers
-proceed in parallel while still serialising writers.
+Manual JDK lock. Readers run in parallel, writers serialise.
 
 ```java
 private final ReadWriteLock lock = new ReentrantReadWriteLock();
@@ -205,47 +144,64 @@ public Customer find(String id) {
 }
 ```
 
-This is what most Eclipse Store apps end up using. Verbose but transparent.
-
 ### `LockedExecutor` and `LockScope`
 
-For more concise code without the manual try/finally, Eclipse Store provides
-two helpers wrapping a `ReentrantReadWriteLock`:
+`LockedExecutor` wraps a `ReentrantReadWriteLock` behind an
+`Action`/`Producer` API. `LockScope` is the same as an abstract base
+class so your domain class inherits `read`/`write` inline.
 
-- **`LockedExecutor`** — an interface exposing `read(Producer<R>)` /
-  `read(Action)` / `write(Producer<R>)` / `write(Action)`. `Producer<R>` and
-  `Action` live in `org.eclipse.serializer.functional` — the latter is just
-  `Runnable`-shaped without the checked-exception ergonomics.
-- **`LockScope`** — an abstract base class exposing the same methods as
-  `protected` so your domain class inherits them inline.
+| Method on `LockedExecutor` | Returns |
+|---|---|
+| `LockedExecutor.New()` | `LockedExecutor` |
+| `read(Action)` | `void` |
+| `read(Producer<R>)` | `R` |
+| `write(Action)` | `void` |
+| `write(Producer<R>)` | `R` |
+
+`LockScope` exposes the same four methods as `protected` — subclass it.
 
 ```java
 LockedExecutor exec = LockedExecutor.New();
 
-exec.write(() -> {
+exec.write(() -> {                              // Action
     root.customers().add(c);
     storage.store(root.customers());
 });
 
-Customer c = exec.read(() -> root.customers().get(id));
+Customer c = exec.read(() -> root.customers().get(id));   // Producer<Customer>
 ```
 
-Same semantics as the explicit RW lock, less boilerplate.
+### `StripeLockedExecutor` and `StripeLockScope`
 
-### Striped locking
+Striped RW locking — independent regions (per customer, per tenant, per
+shard) run in parallel. Stripe is selected by `mutex.hashCode() %
+stripeCount`.
 
-If the graph naturally partitions into independent regions (customer-scoped,
-tenant-scoped, shard-scoped), striped locking lets threads working on different
-regions run in parallel even when both hold write locks.
+| Method on `StripeLockedExecutor` | Returns |
+|---|---|
+| `StripeLockedExecutor.New(int stripeCount)` | `StripeLockedExecutor` |
+| `read(Object mutex, Action)` | `void` |
+| `read(Object mutex, Producer<R>)` | `R` |
+| `write(Object mutex, Action)` | `void` |
+| `write(Object mutex, Producer<R>)` | `R` |
 
-`StripeLockedExecutor` and `StripeLockScope` are the helpers. Striped locking
-is more complex than RW and **does not help if the hot path crosses stripes** —
-measure before reaching for it.
+`StripeLockScope` is the matching abstract base class (`protected`
+methods, same shape). Pick stripe count as a power of 2 large enough
+that hot mutexes don't collide. **Does not help if the hot path crosses
+stripes** — measure before reaching for it.
+
+```java
+StripeLockedExecutor exec = StripeLockedExecutor.New(16);
+
+exec.write(customerId, () -> {                  // mutex = customerId
+    root.customers().get(customerId).recordVisit();
+    storage.store(root.customers().get(customerId));
+});
+```
 
 ### Spring Boot — `@Read` / `@Write` / `@Mutex`
 
-The Spring Boot integration provides a declarative AOP layer for the same
-pattern. Annotate service methods; the aspect acquires the lock.
+Declarative AOP at the service method level.
 
 ```java
 @Component
@@ -263,162 +219,90 @@ public class CustomerService {
 }
 ```
 
-`@Mutex("name")` partitions locks (per-aggregate). See `spring-boot` skill for
-the full setup. The contract is identical to the manual patterns above:
-*the lock must span both the mutation and the `store()` — both must be inside
-the annotated method body*.
+`@Mutex("name")` partitions locks per name (per-aggregate). Bean wiring
++ AOP requirements live in `spring-boot`. The contract is identical to
+the manual patterns: the lock must span both the mutation and the
+`store()` — both inside the annotated method body.
 
 ## GigaMap concurrency
 
-GigaMap has its own concurrency story because it is itself a thread-safe data
-structure.
-
-1. **Each GigaMap operation (`add`, `remove`, `update`, `apply`, `get`) acquires
-   the GigaMap's internal read-write lock.** You do *not* need to wrap individual
-   GigaMap operations in your own lock for them to be atomic.
+1. **Each GigaMap operation acquires the GigaMap's internal RW lock.**
+   You do not need to wrap individual ops in your own lock for them to
+   be atomic.
 2. **Always prefer `gigaMap.store()` over `storageManager.store(gigaMap)`.**
-   The former acquires the GigaMap's internal lock for the duration of the
-   store; the latter does not. Concurrent mutations during the store leave the
-   GigaMap in an inconsistent state and the store fails.
-3. **Iterators must be closed** so the underlying read lock is released. Use
-   try-with-resources for any iterator returned from a GigaMap. A leaked
-   iterator holds the read lock open and starves writers.
-4. **The internal lock covers GigaMap operations only.** Stored *elements* (the
-   values held in the GigaMap and any objects they reference) can still be
-   mutated by another thread during the store walk. The GigaMap itself remains
-   fine, but the persisted element graph may be inconsistent. Application-level
-   synchronization is still required around mutation and storing of those
-   objects.
-5. **Cross-aggregate atomicity is your job.** If a business operation modifies
-   a GigaMap *and* other parts of the object graph atomically, you still need
-   an application-level lock spanning both — the GigaMap's internal lock does
-   not extend to non-GigaMap state.
-
-This is the classic limitation of synchronized JDK collections like `Vector`:
-per-method synchronization is not enough when a logical operation needs to
-span multiple calls.
+   The former holds the internal lock for the duration of the store;
+   the latter bypasses it and fails under concurrent mutation.
+3. **Iterators must be closed** (try-with-resources). A leaked iterator
+   holds the read lock open and starves writers.
+4. **The internal lock covers GigaMap operations only.** Elements held
+   in the GigaMap can still be mutated by another thread during the
+   store walk — the GigaMap itself stays consistent, but the persisted
+   element graph may not. Application-level synchronization around
+   element mutation + storing is still needed.
+5. **Cross-aggregate atomicity is your job.** GigaMap mutation + other
+   graph changes inside one business operation needs an
+   application-level lock spanning both.
 
 ## Pitfalls
 
-1. **Mutation in one method, `store()` in another.** The lock has to span
-   both. A `void update()` that mutates and returns, followed by a separate
-   `void persist()` that calls `store()`, is broken even if both methods are
-   individually synchronized — another thread can mutate between them.
-2. **Holding a lock across slow operations.** Network calls, UI callbacks,
-   blocking I/O, human input — none belong inside the critical section. The
-   lock should bracket the mutation and the `store()`, nothing more.
-3. **Returning a mutable collection from inside the lock.** A `@Read` method
-   returning the live `List<Customer>` lets the caller mutate it after the
-   read lock has been released. Return an unmodifiable view, defensive copy,
-   or snapshot.
-4. **Forgetting to close GigaMap iterators.** Leaked iterator → leaked read
-   lock → starved writers. Always try-with-resources.
-5. **Using `storageManager.store(gigaMap)`.** Bypasses the GigaMap's internal
-   lock; use `gigaMap.store()`.
-6. **Sharing a `Storer` across threads.** A `Storer` is single-threaded state.
-   Each thread that wants to store concurrently must obtain its own.
-7. **Wrapping every method in `synchronized`.** Correct, but degenerates to
-   single-threaded throughput. If the profiler shows lock contention
-   everywhere, switch to RW before reaching for striped locks.
-8. **Mixing strategies on the same protected region.** A `synchronized` block
-   on the root and a `LockedExecutor` covering the same data do not serialise
-   against each other. Pick one strategy per protected region.
+1. **Mutation in one method, `store()` in another.** Lock must span
+   both. `void update()` then `void persist()` is broken even if each
+   is `synchronized` — another thread can interleave.
+2. **Holding a lock across slow operations** — network calls, UI
+   callbacks, blocking I/O. Bracket the mutation + store only.
+3. **Returning a mutable collection from inside the lock.** Caller
+   mutates after release. Return an unmodifiable view, a defensive
+   copy, or a snapshot.
+4. **Wrapping every method in `synchronized`.** Correct but
+   single-threaded throughput. Switch to RW or striped when contention
+   shows up in the profiler.
+5. **Mixing strategies on the same protected region.** `synchronized`
+   and `LockedExecutor` over the same data do not serialise against
+   each other.
 
-## Testing for concurrency correctness
+## Testing
 
-Concurrency bugs do not reproduce in single-threaded unit tests. The pattern
-that catches most regressions:
-
-1. Spin up a fixed number of writer and reader threads against a real
-   `EmbeddedStorageManager`.
-2. Run them for tens of seconds, performing thousands of mutations and reads
-   each.
-3. After the run, assert **invariants** on the in-memory graph — totals match
-   line items, parent/child references are consistent, no duplicate keys.
-4. Restart the storage and re-assert the invariants on the persisted state to
-   confirm the lock also covered the `store()` call.
-
-Stress tests should run as part of CI, not just on a developer's machine. For
-deterministic exploration of interleavings, frameworks like
-[JCStress](https://openjdk.org/projects/code-tools/jcstress/) are available,
-but the simple stress-test pattern above catches the overwhelming majority of
-real-world bugs.
+The pattern that catches most regressions: N writer + M reader threads
+against a real `EmbeddedStorageManager`, thousands of mutations each,
+then assert invariants on the in-memory graph. **Restart the storage
+and re-assert on the persisted state** — that's what proves the lock
+covered `store()` and not just the mutation.
 
 ## Interactions with other skills
 
-- **`storing-data`** — every example of mutation + `store()` is implicitly
-  inside a critical section; this skill is what makes that work in
-  multi-threaded code. The "explicit argument is always re-written" rule is
-  there.
-- **`gigamap`** — GigaMap-specific concurrency rules above; the rest of the
-  skill covers indices, queries, and `gigaMap.store()`.
-- **`spring-boot`** — Spring's `@Read` / `@Write` / `@Mutex` AOP is the
-  declarative form of the rule here. Spring's `@Transactional` does **nothing**
-  for Eclipse Store.
-- **`serializer-standalone`** — `Serializer` instances must be confined to a
-  single thread; the `SerializerFoundation` is safe to share.
-- **`configuration`** — the lock *file* is process-level (preventing two JVMs
-  from opening the same storage), unrelated to the thread-level rules here.
-
-## Recipes
-
-**"How do I handle concurrent writes?"** → Pick a strategy from the ladder
-above. Default to `ReentrantReadWriteLock` or `LockedExecutor` unless your
-read/write ratio or partitioning suggests otherwise.
-
-**"Is `EmbeddedStorageManager.store()` thread-safe?"** → For *durability*
-(the on-disk write), yes — atomic. For *isolation* (the in-memory graph it
-traverses), **no** — your lock must cover the graph.
-
-**"Can I share a `Storer` across threads?"** → No. Each thread gets its own.
-
-**"`storageManager.store(gigaMap)` keeps failing."** → That is the symptom of
-GigaMap-internal-state-changed-under-the-store. Switch to `gigaMap.store()`.
-
-**"Do channels parallelize my writes?"** → They parallelize the library's I/O,
-not your application's mutations. Channels are internal threads; they do not
-synchronize anything for you.
-
-**"My read method returns a `List` — is that safe?"** → Only if the caller
-cannot mutate it after you release the read lock. Return an unmodifiable view
-(`Collections.unmodifiableList`), a copy, or a snapshot.
-
-**"How do I lock per-aggregate without Spring?"** → Manage one
-`ReentrantReadWriteLock` (or `LockedExecutor`) per aggregate root, look up the
-right one in the service method, and acquire/release explicitly. Striped
-helpers (`StripeLockedExecutor`) automate the lookup if your stripes are
-hashable.
-
-**"How do I stress-test the locking?"** → See "Testing for concurrency
-correctness" above. The key step is the **restart and re-assert** — that is
-what proves your lock covered the `store()` and not just the mutation.
+- **`storing-data`** — every mutation + `store()` is implicitly inside
+  a critical section.
+- **`gigamap`** — GigaMap-specific rules above; rest of the skill
+  covers indices / queries.
+- **`spring-boot`** — `@Read` / `@Write` / `@Mutex` AOP setup. Spring's
+  `@Transactional` does **nothing** for Eclipse Store.
+- **`serializer-standalone`** — `Serializer` is single-thread;
+  `SerializerFoundation` is shareable.
+- **`configuration`** — the lock *file* is process-level, unrelated to
+  thread-level locking.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — signatures for `XThreads.executeSynchronized`,
-  `LockedExecutor`, `LockScope`, `StripeLockedExecutor`, `StripeLockScope`,
-  Spring `@Read` / `@Write` / `@Mutex`, `LockAspect`.
-- `references/strategies-deep-dive.md` — full code examples for each strategy
-  (coarse, RW, helpers, striped, Spring) with trade-off discussion.
-- `references/pitfalls-deep-dive.md` — each pitfall with reproducer and fix,
-  including the three failure modes (partial reads, persisted-graph divergence,
-  GigaMap stored in inconsistent state).
+- **Load `references/api-catalogue.md`** when you need a method overload
+  or factory variant not in the in-line tables — e.g. additional
+  `XThreads` helpers (`start(...)`, `sleep(...)`, `executeDelayed(...)`),
+  `LockAspect` internals, less common `LockedExecutor`/`LockScope`
+  constructors.
+- **Load `references/strategies-deep-dive.md`** when implementing a
+  non-trivial strategy variant — custom mutex selection for striping,
+  custom lock pairing across aggregates, integrating an existing
+  `ReentrantReadWriteLock` with `LockedExecutor.New(...)`, or weighing
+  trade-offs between two strategies for a specific workload.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a
+  concurrency bug — `ConcurrentModificationException` during `store()`,
+  inconsistent persisted state after restart, hanging threads, a
+  stress-test failure, or any "this worked single-threaded but broke
+  under load" symptom.
 
 ## Upstream sources
 
-- `docs/modules/intro/pages/concurrent-access.adoc` — the canonical treatment
-  this skill mirrors.
-- `docs/modules/misc/pages/locking/index.adoc` — the helpers reference
-  (`LockedExecutor`, `LockScope`, `StripeLockedExecutor`,
-  `ReentrantReadWriteLock` patterns).
-- `docs/modules/misc/pages/integrations/spring-boot.adoc` — the
-  `_mutex_locking` section covers `@Read` / `@Write` / `@Mutex`.
-- `docs/modules/storage/pages/storing-data/transactions.adoc` — `store()`
-  atomicity at the persistence level.
-- `docs/modules/gigamap/pages/crud.adoc#_locking` and
-  `docs/modules/gigamap/pages/persistence.adoc` — GigaMap's internal locking
-  and the `gigaMap.store()` rule.
-- `docs/modules/serializer/pages/performance.adoc` — per-thread `Serializer`
-  pattern.
-- `docs/modules/storage/pages/configuration/lock-file.adoc` — *process*-level
-  locking (unrelated to application-level concurrency).
+`docs/modules/intro/pages/concurrent-access.adoc` —
+canonical treatment. Helpers reference: `docs/modules/misc/pages/locking/`.
+Spring AOP: `docs/modules/misc/pages/integrations/spring-boot.adoc`
+(`_mutex_locking`). GigaMap locking:
+`docs/modules/gigamap/pages/{crud.adoc#_locking,persistence.adoc}`.
