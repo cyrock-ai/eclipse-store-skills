@@ -37,7 +37,7 @@ EmbeddedStorage.start(root, storageDir);
 | Azure Blob | `afs-azure-storage` | `AzureStorageConnector.Caching(blobService)` |
 | GCP Firestore | `afs-googlecloud-firestore` | `GoogleCloudFirestoreConnector.Caching(firestore)` |
 | Oracle Cloud Object | `afs-oraclecloud-objectstorage` | `OracleCloudObjectStorageConnector.Caching(objectStorage)` |
-| Redis | `afs-redis` | `RedisConnector.Caching(jedisPool)` |
+| Redis | `afs-redis` | `RedisConnector.Caching(String redisUri)` or `RedisConnector.Caching(io.lettuce.core.RedisClient)` — Eclipse Store's Redis AFS uses **Lettuce**, not Jedis |
 | Kafka | `afs-kafka` | `KafkaConnector.Caching(kafkaProps)` |
 | SQL (generic) | `afs-sql` | `SqlConnector.Caching(SqlProvider)` — provider built via `SqlProviderPostgres.New(dataSource)` (also `SqlProviderMariaDb` / `SqlProviderOracle` / `SqlProviderSqlite` / `SqlProviderHana`) |
 

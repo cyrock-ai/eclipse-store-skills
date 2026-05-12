@@ -134,16 +134,33 @@ EmbeddedStorage.start(root, fs.ensureDirectoryPath("container-name", "data"));
   <artifactId>afs-redis</artifactId>
   <version>${eclipse-store.version}</version>
 </dependency>
+<dependency>
+  <groupId>io.lettuce</groupId>
+  <artifactId>lettuce-core</artifactId>
+  <version>6.3.2.RELEASE</version>
+</dependency>
 ```
+
+Eclipse Store's Redis AFS uses **Lettuce** (`io.lettuce.core.RedisClient`),
+NOT Jedis. The `Caching` factory has a `String redisUri` overload that builds
+the client internally:
 
 ```java
 import org.eclipse.store.afs.redis.types.RedisConnector;
-import redis.clients.jedis.JedisPool;
 
-JedisPool pool = new JedisPool("localhost", 6379);
-BlobStoreFileSystem fs = BlobStoreFileSystem.New(RedisConnector.Caching(pool));
+BlobStoreFileSystem fs = BlobStoreFileSystem.New(
+    RedisConnector.Caching("redis://localhost:6379"));
 
 EmbeddedStorage.start(root, fs.ensureDirectoryPath("eclipsestore", "data"));
+```
+
+If you need to share an existing client across the app:
+
+```java
+import io.lettuce.core.RedisClient;
+
+RedisClient client = RedisClient.create("redis://localhost:6379");
+BlobStoreFileSystem fs = BlobStoreFileSystem.New(RedisConnector.Caching(client));
 ```
 
 Redis AFS is intentionally for specific use cases — e.g., in-memory data
