@@ -10,7 +10,7 @@ description: >
   "S3Connector", "ADirectory", "AFS", "caching connector", "alternate storage
   target", or needs help choosing a backend and configuring it with the right AFS
   module.
-version: 0.1.1
+version: 0.2.0
 ---
 
 # Eclipse Store — Storage Targets (AFS)
@@ -20,23 +20,14 @@ variety of cloud / distributed backends. The storage engine treats every backend
 through the same Directory/File abstraction. You pick the backend by choosing a
 connector and a Maven artifact.
 
-## When to use this skill
+## Do NOT use this skill
 
-- User asks how to run Eclipse Store against S3, Azure, GCP, Redis, Kafka.
-- User asks about `BlobStoreFileSystem`, `NioFileSystem`, `S3Connector`, `ADirectory`.
-- User is wiring cloud credentials into Eclipse Store.
-- User is weighing latency/performance of a blob-store backend vs. local SSD.
-- User asks about the `storage-filesystem` / `backup-filesystem` complex config
-  properties.
-
-**Route elsewhere** when:
-
-- User is just using local filesystem → `getting-started` + `configuration` are
-  enough; NIO is the default.
-- User wants a backup destination (separate from live storage) → this skill covers
-  the AFS side, `configuration` covers `backup-directory`.
-- User wants SQL-as-a-database (not blob) → Eclipse Store does not target that;
-  AFS SQL is blob-in-table.
+- Just using the local filesystem → `getting-started` + `configuration`; NIO
+  is the default and needs no code change.
+- The AFS for the backup destination only → this skill is the AFS half;
+  `configuration` covers `backup-directory` semantics.
+- SQL-as-a-relational-database — Eclipse Store does not do that; AFS SQL is
+  blob-in-table.
 
 ## Mental model
 
@@ -90,20 +81,12 @@ exists for rare cases (transactional audits, tiny workloads).
 
 ## Idiomatic patterns
 
-### Pattern A — Local NIO (default, no code change)
+### Pattern A — Local NIO (default)
 
-```java
-EmbeddedStorage.start(root, Paths.get("data"));
-```
-
-Internally:
-
-```java
-NioFileSystem fs = NioFileSystem.New();
-EmbeddedStorage.start(root, fs.ensureDirectoryPath("data"));
-```
-
-Use the explicit form only when customizing the NIO filesystem (rare).
+`EmbeddedStorage.start(root, Paths.get("data"))` already runs through
+`NioFileSystem.New()`. Use the explicit `NioFileSystem.New()` →
+`fs.ensureDirectoryPath(...)` form only when customizing the NIO filesystem
+(rare; see `getting-started`).
 
 ### Pattern B — AWS S3 (general bucket)
 
@@ -196,26 +179,32 @@ backup-filesystem.aws.s3.region=eu-north-1
 # ...credentials...
 ```
 
+This low-level Foundation wiring is for **live and backup on different AFS
+types** (e.g. NIO live + S3 backup, as shown). For NIO-to-NIO backup (both
+local), do NOT mix `Storage.ConfigurationBuilder()` with two `NioFileSystem`
+instances — Eclipse Store treats the implicit AFS roots as incompatible and
+throws `AfsExceptionConsistency`. Use the high-level
+`EmbeddedStorageConfiguration.Builder().setStorageDirectory(...)
+.setBackupDirectory(...)` instead (from the `storage-embedded-configuration`
+artifact — see `configuration` skill).
+
 ### Pattern F — Other backends (same shape)
 
-All blob-store backends follow the same pattern:
+Every backend collapses to: build the SDK client → `XConnector.Caching(client)`
+→ `BlobStoreFileSystem.New(connector)` → `fs.ensureDirectoryPath(...)` →
+`EmbeddedStorage.start(root, dir)`. For SQL, wrap a JDBC `DataSource` in
+`SqlProviderPostgres.New(ds)` (or `SqlProviderMariaDb` / `…Oracle` / `…Sqlite`
+/ `…Hana`) and pass it to `SqlConnector.Caching(provider)`.
 
-```java
-// Azure
-AzureStorageConnector connector = AzureStorageConnector.Caching(blobServiceClient);
-BlobStoreFileSystem fs = BlobStoreFileSystem.New(connector);
+Per-backend SDK choices that surprise people: Redis uses **Lettuce**
+(`io.lettuce.core.RedisClient`), not Jedis — `RedisConnector.Caching(...)`
+takes a `String redisUri` or a `RedisClient`. Kafka takes a plain
+`java.util.Properties`. Azure takes a `BlobServiceClient` from
+`com.azure.storage.blob`.
 
-// Redis
-RedisConnector connector = RedisConnector.Caching(jedisPool);
-
-// Kafka
-KafkaConnector connector = KafkaConnector.Caching(kafkaProperties);
-```
-
-See `references/s3.md` for the deep S3 walk-through, and
-`references/api-catalogue.md` + `references/examples-expanded.md` for the
-per-backend config keys (Azure / Redis / Kafka / DynamoDB / Firestore / OCI /
-SQL) and runnable code samples.
+Full runnable code per backend lives in `references/examples-expanded.md`;
+per-backend config-property keys in `references/api-catalogue.md`; deep S3
+notes in `references/s3.md`.
 
 ## Anti-patterns (do NOT do this)
 
@@ -264,14 +253,12 @@ primitive if multiple processes need access.
 5. **Credential refresh.** Most SDKs handle IAM role rotation; be sure to pass a
    `DefaultCredentialsProvider` (`credentials.type=default`) in container
    environments.
-6. **Channel count and latency.** More channels = more parallel backend
-   requests. Useful on local SSDs, sometimes counterproductive on metered
-   APIs. Test.
-7. **Kafka AFS semantics.** Append-only with compaction; conceptually different
-   from random-access blob stores. Use carefully — Eclipse Store's housekeeping
-   compaction interacts non-trivially with Kafka retention.
-8. **SQL AFS.** Blob-in-row; useful for "database is the allowed storage" scenarios
-   but adds a transaction layer Eclipse Store doesn't otherwise need.
+6. **Kafka AFS semantics.** Append-only with compaction; conceptually different
+   from random-access blob stores. Eclipse Store's housekeeping compaction
+   interacts non-trivially with Kafka retention.
+7. **SQL AFS.** Blob-in-row; useful for "database is the allowed storage"
+   scenarios but adds a transaction layer Eclipse Store doesn't otherwise
+   need.
 
 ## Interactions with other skills
 
@@ -313,9 +300,6 @@ CLI is NIO-only; for cross-AFS conversion invoke `StorageConverter`
 programmatically. A plain file-level copy of the directory contents also works
 as long as paths are preserved (both ends are opaque blobs to AFS).
 
-**"Is backup to a different AFS a good idea?"** → Yes. Live locally, backup to
-cloud is the typical safe setup.
-
 **"What about S3 versioning / object lock?"** → AFS treats one logical file as a
 sequence of S3 objects keyed `<path>.<N>`; each key is written exactly once
 (`BlobStoreConnector.writeData` always picks the next sequential number) and
@@ -327,14 +311,22 @@ write history. Costs extra.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — full AFS interfaces, connector factories per
-  backend, and the external configuration keys (S3, DynamoDB, Azure, Firestore,
-  OCI, Redis, Kafka, SQL).
-- `references/s3.md` — S3 deep dive: credential strategies (static / env /
-  default), general vs. directory buckets, endpoint override, cost notes.
-- `references/examples-expanded.md` — runnable setups across backends (S3,
-  directory bucket, Azure, Redis, Kafka, DynamoDB, SQL).
-- `references/pitfalls-deep-dive.md` — each pitfall above with reproducer.
+- **Load `references/api-catalogue.md`** when you need the exact connector
+  factory signature for a backend not shown above, or the full property keys
+  under `storage-filesystem.*` / `backup-filesystem.*` for AWS (S3, DynamoDB),
+  Azure, GCP Firestore, OCI Object Storage, Redis, Kafka, or SQL (Postgres /
+  MariaDB / Oracle / SQLite / HANA).
+- **Load `references/s3.md`** when wiring AWS S3 specifically — credential
+  strategies, general vs. directory buckets, `endpointOverride` for
+  S3-compatible services (MinIO, Backblaze) or zonal endpoints, request-rate
+  and pricing notes.
+- **Load `references/examples-expanded.md`** when you want a complete runnable
+  Java template for a specific backend — Azure with connection string, Redis
+  with Lettuce, Kafka with `Properties`, DynamoDB, SQL via `SqlProviderPostgres`.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a backend bug —
+  non-caching latency, wrong region, multi-writer race on the same prefix,
+  cross-region cost, Kafka log compaction eating data, Redis TTL, SQL
+  deadlocks, S3 rename-not-atomic surprises.
 
 ## Upstream sources
 
