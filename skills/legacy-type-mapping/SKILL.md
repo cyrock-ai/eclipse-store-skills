@@ -11,7 +11,7 @@ description: >
   "BinaryLegacyTypeHandler", "PersistenceLegacyTypeMappingResultor",
   "PersistenceMemberSimilator", or reports a "no suitable type handler" / "legacy type
   mapping required" message at startup.
-version: 0.1.1
+version: 0.2.0
 ---
 
 # Eclipse Store — Legacy Type Mapping (Schema Evolution)
@@ -22,21 +22,12 @@ transforms old binary data on the fly during load. Most of the time it does it
 automatically with heuristic matching. When the heuristic guesses wrong, you supply
 an explicit mapping file or a custom legacy type handler.
 
-## When to use this skill
+## Do NOT use this skill
 
-- User changed a class and reports a startup failure about "legacy type mapping".
-- User asks how to rename a field / class / package without losing data.
-- User is writing a `refactorings.csv`.
-- User wants to split one field into multiple (custom legacy handler).
-- User wants to delete a class and asks how.
-- User wants to customize the similarity heuristic.
-
-**Route elsewhere** when:
-
-- User wants generic custom type handlers (not for legacy) → `custom-type-handlers`.
-- User wants to physically migrate data to new channel count / directory layout → that
-  is `configuration` (channel tuning) or offline export-import, not this skill.
-- User just added a field and "it works" — no skill needed, it's automatic.
+- Generic custom type handlers (not for legacy) → `custom-type-handlers`.
+- Physically migrating data to a new channel count / directory layout — that is
+  `configuration` (channel tuning) or offline export-import, not this skill.
+- Just added a field and "it works" — no skill needed, it's automatic.
 
 ## Mental model
 
@@ -81,17 +72,32 @@ Just run. If the heuristic gets it right, you're done.
 
 ### Explicit mapping via CSV
 
+The Path overload picks the separator from the **file extension** via
+`XCsvDataType`: `.csv` prefers `,`, `.tsv` / `.xcsv` prefer `\t`. There is no
+auto-detect fallback — content must match the extension's preferred separator.
+
+For `;`-separated content (the most readable in this skill's examples), read
+the file yourself and use the inline overload with an explicit separator:
+
 ```java
 EmbeddedStorageFoundation<?> foundation = EmbeddedStorage.Foundation(dataDir);
 foundation.setRefactoringMappingProvider(
-    Persistence.RefactoringMapping(Paths.get("refactorings.csv"))
+    Persistence.RefactoringMapping(
+        Files.readString(Paths.get("refactorings.csv")),
+        ';'
+    )
 );
 EmbeddedStorageManager storage =
     foundation.createEmbeddedStorageManager(root);
 storage.start();
 ```
 
-CSV format (semicolons or tabs):
+Equivalent forms: a `.tsv` file with tab content via the bare Path overload,
+or a `.csv` file with comma content. Mismatched extension/content fails with
+`ArrayIndexOutOfBoundsException` at startup.
+
+CSV format (using `;` below for visual clarity; tabs in a `.tsv` file are
+equivalent):
 
 ```csv
 old                                         current
@@ -293,10 +299,14 @@ behaviour (fail on unclear matches), implement a custom resultor.
 Every change adds an entry to the dictionary. Cumulative mappings become hard to
 audit. Prefer stable names.
 
-### Anti-pattern 7 — Wrong CSV delimiter
+### Anti-pattern 7 — Separator does not match the file extension
 
-The parser accepts semicolons and tabs. Commas will be silently treated as part of
-field names and your mapping won't do what you expect. Use `;`.
+Mixing a `.csv` extension with `;` content (or `.tsv` with `,` content). The Path
+overload picks the separator from the extension — `.csv` prefers `,`, `.tsv`/`.xcsv`
+prefer `\t`. A mismatch parses every row as one column → `ArrayIndexOutOfBoundsException`
+during dictionary analysis. Either align the extension with the content, or use
+`Persistence.RefactoringMapping(content, separator)` to declare the separator
+explicitly.
 
 ## Pitfalls & gotchas
 
@@ -344,17 +354,14 @@ similarity score. If above ~0.6 you're fine; below, write a CSV entry.
 **"I renamed a class. Will it break?"** → Yes without explicit mapping. Add a class-
 level entry: `old.Fqcn;new.Fqcn`.
 
-**"I moved a class to a different package."** → Same as rename.
-
 **"I added a field, will old data load?"** → Yes. The new field gets the default
 value (null/0/false). Re-store the record to persist the field explicitly.
 
 **"I removed a field, will old data load?"** → Yes. The old value is discarded.
 
-**"I changed a field type from int to long."** → Yes, auto widening.
-
-**"I changed a field type from long to int."** → Yes, with Java cast semantics
-(truncation possible).
+**"I changed a field's primitive type."** → Widening (`int` → `long`) is lossless;
+narrowing (`long` → `int`) follows Java cast truncation. Primitive ↔ wrapper auto-
+boxes with `null` → `0`/`0.0`/`false`. No CSV needed.
 
 **"I want to split `fullName` into `firstName` + `lastName`."** → Custom legacy type
 handler. Field mapping can't compute derivatives.
@@ -366,21 +373,26 @@ to INFO (or DEBUG). You'll see the mapping table per type at startup.
 **"How do I find a Type ID?"** → Open `PersistenceTypeDictionary.ptd` in the storage
 directory. Each class definition starts with its Type ID.
 
-**"Can I automate CSV generation?"** → Write a small tool: diff old dictionary vs.
-new class definitions. Upstream doesn't ship one; a custom
-`PersistenceLegacyTypeMappingResultor` that logs a suggested CSV is a common
-middle ground.
-
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — foundation hooks, provider interfaces,
-  `BinaryLegacyTypeHandler.AbstractCustom<T>` methods, related persistence API.
-- `references/examples-expanded.md` — three full scenarios: heuristic run, explicit
-  CSV with inheritance, custom legacy handler (70 lines).
-- `references/mapping-rules-cheatsheet.md` — every CSV syntax variant with examples.
-- `references/refactor-playbook.md` — step-by-step procedures for common refactors
-  (rename field, rename class, delete class, split field).
-- `references/pitfalls-deep-dive.md` — each pitfall above with reproducer and fix.
+- **Load `references/api-catalogue.md`** when you need the exact foundation hook,
+  the `Persistence.RefactoringMapping(...)` overload set (Path / String / inline-with-
+  separator / programmatic), the `BinaryLegacyTypeHandler.AbstractCustom<T>` contract
+  table, or the `PersistenceLegacyTypeMappingResultor` interface for a fail-on-low-
+  confidence resultor.
+- **Load `references/examples-expanded.md`** when you want a complete runnable
+  template — heuristic-only rename, CSV explicit mapping, custom legacy handler for
+  a field-split, class-delete end-to-end, custom annotation-based heuristic.
+- **Load `references/mapping-rules-cheatsheet.md`** when authoring a CSV — every
+  syntax form (rename / discard / new / class-level / inheritance / type-ID-scoped),
+  delimiter rules, parser-error semantics.
+- **Load `references/refactor-playbook.md`** when planning a specific refactor —
+  step-by-step procedures for rename field / rename class / add / remove / retype /
+  split / delete class, plus recovery-from-botched-mapping.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a schema-evolution bug
+  — ClassNotFoundException after delete, PersistenceUnreachableTypeHandler at load,
+  heuristic crossing two renames, CSV path not resolved at runtime, multiple stored
+  versions of one class.
 
 ## Upstream sources
 

@@ -54,18 +54,32 @@ com.myapp.X#beta;com.myapp.X#alpha
 
 Eclipse Store processes explicit mappings first; the heuristic won't re-map them.
 
-## 4. `commas` in CSV silently break parsing
+## 4. File extension and separator mismatch silently breaks parsing
 
 ```csv
-old,current
-com.x.A#a,com.x.A#b
+# saved as refactorings.csv but content uses ';'
+old;current
+com.x.A#a;com.x.A#b
 ```
 
-**Symptom.** Mapping silently ignored.
+**Symptom.** Startup fails with `ArrayIndexOutOfBoundsException: Index 1 out of
+bounds for length 1` during dictionary analysis.
 
-**Root cause.** Parser expects `;` or tab. `,` becomes part of the field name.
+**Root cause.** `Persistence.RefactoringMapping(Path)` picks the separator from
+the file extension via `XCsvDataType`: `.csv` prefers `,`, `.tsv`/`.xcsv` prefer
+`\t`. There is no auto-detect fallback — every line parses as one column when
+content doesn't use the preferred separator.
 
-**Fix.** Use `;` or tabs.
+**Fix.** Either align the extension with the content (rename to `.tsv` and use
+tabs, or keep `.csv` and use commas), or read the file yourself and supply the
+separator explicitly:
+
+```java
+Persistence.RefactoringMapping(
+    Files.readString(Paths.get("refactorings.csv")),
+    ';'
+);
+```
 
 ## 5. CSV path not resolved at runtime
 
