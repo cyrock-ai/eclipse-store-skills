@@ -33,12 +33,20 @@ Look up Type IDs in `PersistenceTypeDictionary.ptd`.
 
 ## Delimiters & whitespace
 
-- File-based parsing (`Persistence.RefactoringMapping(Path)`) auto-detects the
-  delimiter; tab and `;` both work. Tabs are preferred (highest XCSV weight).
+- File-based parsing (`Persistence.RefactoringMapping(Path)`) picks the separator
+  from the **file extension** via `XCsvDataType`:
+  - `.csv` → `,` preferred (highest weight 1.3, then `;` 1.2, tab 1.1).
+  - `.tsv` / `.xcsv` → tab preferred (1.3, then `;` 1.2, `,` 1.1).
+  There is **no fallback** if content doesn't use the preferred separator: every
+  line parses as one column and dictionary analysis fails with
+  `ArrayIndexOutOfBoundsException`.
 - Inline-string parsing — `Persistence.RefactoringMapping(String)` defaults to the
-  XCSV separator (`\t`). To use `;` inline pass it explicitly:
+  XCSV separator (`\t`). To use `;` (or any other) inline, pass it explicitly:
   `Persistence.RefactoringMapping(csv, ';')`.
-- `,` does **not** work for refactoring CSVs.
+- To use `;` with a file, read the file yourself:
+  `Persistence.RefactoringMapping(Files.readString(path), ';')`.
+- `,` works for `.csv` files (it is the preferred separator). Avoid `,` if any
+  field name might contain a comma.
 - Leading/trailing whitespace on each cell is trimmed.
 - Blank lines are ignored.
 - Header row is conventional but not required (parser uses column position).

@@ -67,12 +67,16 @@ com.myapp.Customer#comment;
 ;com.myapp.Customer#commerceId
 ```
 
-Wire:
+Wire (semicolon-separated content via inline overload — see SKILL.md "Explicit
+mapping via CSV" for the file-extension/separator rule):
 
 ```java
 EmbeddedStorageFoundation<?> foundation = EmbeddedStorage.Foundation(dataDir);
 foundation.setRefactoringMappingProvider(
-    Persistence.RefactoringMapping(Paths.get("refactorings.csv"))
+    Persistence.RefactoringMapping(
+        Files.readString(Paths.get("refactorings.csv")),
+        ';'
+    )
 );
 EmbeddedStorageManager storage =
     foundation.createEmbeddedStorageManager(root);
@@ -120,7 +124,7 @@ package app.migration;
 
 import java.util.List;
 
-import org.eclipse.serializer.collections.X;
+import org.eclipse.serializer.util.X;
 import org.eclipse.serializer.persistence.binary.types.Binary;
 import org.eclipse.serializer.persistence.binary.types.BinaryLegacyTypeHandler;
 import org.eclipse.serializer.persistence.types.PersistenceLoadHandler;
