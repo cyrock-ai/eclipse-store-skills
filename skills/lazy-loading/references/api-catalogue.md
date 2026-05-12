@@ -21,11 +21,20 @@
 | `boolean isStored()` | Whether the value has ever been persisted. |
 | `long lastTouched()` | Timestamp (epoch ms) of the last `.get()`. |
 
-### Static null-safe accessor
+### Static null-safe variants
 
 | Method | Purpose |
 |---|---|
 | `static <T> T Lazy.get(Lazy<T>)` | Returns null if the argument is null; else `.get()`. |
+| `static <T> T Lazy.peek(Lazy<T>)` | Returns null if the argument is null; else `.peek()`. |
+| `static boolean Lazy.isLoaded(Lazy<?>)` | Returns false if the argument is null; else `.isLoaded()`. |
+| `static boolean Lazy.isStored(Lazy<?>)` | Returns false if the argument is null; else `.isStored()`. |
+
+### Other static factories
+
+| Method | Purpose |
+|---|---|
+| `static <T> Lazy<T> Lazy.UnregisteredReference(T value)` | Like `Reference(value)` but does NOT auto-register with the global `LazyReferenceManager`. Use for short-lived or test-scoped Lazy instances that should not be subject to automatic clearing. |
 
 ### Static checker factory
 

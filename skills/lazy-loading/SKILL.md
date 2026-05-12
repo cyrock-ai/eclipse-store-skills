@@ -21,7 +21,7 @@ description: >
   reference", "LazyReferenceManager", "unload data from memory", "Lazy.Reference",
   "LazyArrayList", "LazyHashMap", "lazy collections", or needs help deciding
   which subgraphs to wrap in `Lazy<>` to speed up startup and cap RAM usage.
-version: 0.1.0
+version: 0.2.0
 ---
 
 # Eclipse Store — Lazy Loading with `Lazy<T>` and Lazy Collections
@@ -31,41 +31,11 @@ default. For large graphs that means slow start and high memory. `Lazy<T>` and t
 collections are how you defer loads until needed — and how you let the JVM GC reclaim
 loaded subgraphs when memory is tight.
 
-## When to use this skill
+## Do NOT use this skill
 
-**Design-time triggers (apply proactively, before any memory issue is observed):**
-
-- User is **adding a field** to the persistent object model whose value could
-  grow unbounded or rarely needs to be in memory — audit logs, change history,
-  attachments, big blobs, "all events", "all customers ever", time-series data.
-  The default of *not* wrapping in `Lazy<>` means the whole subgraph loads at
-  startup; that decision should be deliberate.
-- User is **designing the root** or a top-level aggregate and listing its
-  child containers — flag which ones should hang off `Lazy<>` rather than
-  direct references.
-- User is **adding a new entity type** with a back-reference to a large parent
-  collection, or a per-entity sub-collection (e.g. `Customer.orders`).
-- User is **reviewing** an existing aggregate for memory / startup behavior
-  ahead of a scale-up.
-
-**Reactive triggers:**
-
-- User's `.start()` is slow and they have a big graph.
-- User's heap fills up with objects they rarely access (audit logs, historical data,
-  old business years).
-- User asks about `Lazy<T>`, `Lazy.Reference`, `Lazy.get`, `LazyArrayList`,
-  `LazyHashMap`, `LazyHashSet`, `LazyReferenceManager`.
-- User wants to clear loaded data to free heap (`lazy.clear()`).
-- User asks why their freshly-loaded lazy keeps its value forever (touched timestamp,
-  memory quota).
-
-**Route elsewhere** when:
-
-- User asks about deferred **storing** — no such thing exists; see `storing-data` for
-  lazy/eager *store* strategies.
-- User's whole subgraph is small and lazy won't help — point them back at
-  `root-and-object-graph`.
-- User is in JCache territory → `cache-jcache`.
+- Deferred **storing** is a different concept; lazy storer strategies → `storing-data`.
+- Whole subgraph is small and `Lazy<>` won't help → `root-and-object-graph`.
+- JCache / cross-process caching → `cache-jcache`.
 
 ## Mental model
 
@@ -106,7 +76,7 @@ From `org.eclipse.serializer.reference`:
 | `Lazy.Reference(T value)` | Factory — wraps an existing value. Value may be null. |
 | `lazy.get()` | Returns T. Loads from storage if cleared. NPE if `lazy` itself is null. |
 | `Lazy.get(Lazy<T>)` | Static null-safe variant — returns null if the lazy is null. |
-| `lazy.clear()` | Drops the hard reference, keeps the id. |
+| `lazy.clear()` | Drops the hard reference, keeps the id. Returns the previous hard reference (or `null` if not loaded). |
 | `lazy.isLoaded()` | Whether the hard reference is currently held. |
 | `lazy.isStored()` | Whether the value has ever been persisted (has an id). |
 | `lazy.peek()` | Returns the current hard reference without loading (may be null). |
@@ -375,12 +345,6 @@ private Lazy<ArrayList<Turnover>> turnovers = Lazy.Reference(new ArrayList<>());
 public ArrayList<Turnover> turnovers() { return Lazy.get(this.turnovers); }
 ```
 
-**"How do I release memory after I'm done with a subgraph?"** → `lazy.clear()`. The
-next `.get()` will reload.
-
-**"How do I avoid the LazyReferenceManager clearing things while I'm using them?"** →
-`.get()` updates the touched-timestamp. Active usage keeps the reference alive.
-
 **"Does calling `.get()` twice load twice?"** → No. Once loaded, the reference is held.
 Only `.clear()` + GC drops it.
 
@@ -397,12 +361,19 @@ walks `.get()` which loads them. Plan accordingly.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — every signature on `Lazy`, `LazyReferenceManager`,
-  lazy collections, and the checker factory.
-- `references/examples-expanded.md` — five full examples: basic wrap, null-safe
-  accessor, custom checker, LazyArrayList ingest, clearing in a batch tool.
-- `references/pitfalls-deep-dive.md` — each pitfall above with a minimal reproducer
-  and fix.
+- **Load `references/api-catalogue.md`** when you need a `Lazy` method not in the
+  in-line Core API table (e.g. `Lazy.peek(Lazy<?>)` / `Lazy.isStored(Lazy<?>)` /
+  `Lazy.isLoaded(Lazy<?>)` static null-safe variants, `Lazy.UnregisteredReference`,
+  the full `LazyReferenceManager.New(...)` overload set, or the segmented-collection
+  constructor rules.
+- **Load `references/examples-expanded.md`** when you want a complete runnable
+  template — canonical per-year lazy list, null-safe accessor, custom
+  `LazyReferenceManager` bootstrap, `LazyArrayList` ingest with `BatchStorer`, batch
+  scanner with explicit clearing, lazy-collection-over-`Map` done right.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a lazy bug — NPE on
+  null Lazy, "modification not persisted" after storing the wrapper, default
+  manager timeout clearing mid-job, `IllegalStateException` crossing storages,
+  iteration eagerly loading all segments.
 
 ## Upstream sources
 

@@ -219,14 +219,16 @@ by housekeeping).
 **Root cause.** Replacing the wrapper creates a fresh entity; the old wrapper is
 unreferenced.
 
-**Fix.** Set the inner value via `.set(newList)` if supported, or populate the existing
-wrapper's target:
+**Fix.** `Lazy` exposes no public setter. Populate the existing wrapper's target in
+place:
 
 ```java
-lst.get();                // load (or be null)
-lst.get().clear();        // mutate in place
-lst.get().addAll(newData);
-storage.store(lst.get());
+ArrayList<X> inner = lst.get();   // load (or get the already-loaded ref)
+inner.clear();
+inner.addAll(newData);
+storage.store(inner);
 ```
 
-In general, prefer to initialize the Lazy once and mutate its contents.
+If the field MUST be replaced (different concrete subtype, fresh wrapper), accept
+the orphaning — the old chain becomes GC'd by housekeeping. In general, prefer to
+initialize the Lazy once and mutate its contents.
