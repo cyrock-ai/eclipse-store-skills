@@ -98,8 +98,10 @@ public class CustomerService {
 a `@Write`-annotated method from inside another `@Write`-annotated method on the
 same lock is fine.
 
-Calling `@Write` from inside `@Read` throws if the lock isn't the same thread
-(would deadlock). Don't nest; restructure.
+`ReentrantReadWriteLock` does NOT support lock upgrade — calling `@Write` from
+inside `@Read` on the same lock deadlocks the thread (it waits for its own
+read lock to be released). Downgrade (`@Write` → `@Read` on the same lock) IS
+supported. Don't nest read→write; restructure.
 
 ## Fairness
 
