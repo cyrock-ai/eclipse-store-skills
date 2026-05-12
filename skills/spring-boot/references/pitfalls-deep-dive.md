@@ -111,16 +111,30 @@ alone. Behaviour depends on Spring's aspect ordering.
 
 ## 5. Injecting the root into a service's constructor as `AppRoot` directly
 
-Might work because the starter sometimes auto-publishes the root bean under its
-class name. Might not, if the starter changes or you have multiple roots.
+```java
+// WRONG
+public CustomerService(AppRoot root) { ... }
+```
+
+**Symptom.** Spring fails to start: "No qualifying bean of type
+'com.example.AppRoot' available".
+
+**Root cause.** The starter (`DefaultEclipseStoreConfiguration`) publishes only
+three beans — `EclipseStoreProperties`, `EmbeddedStorageFoundationSupplier`,
+`EmbeddedStorageManager`. The root is set INTO the manager via
+`foundation.setRoot(...)` during construction; it is not registered as a
+separate Spring bean under its class name.
 
 **Fix.** Inject `EmbeddedStorageManager` and read `s.root()`:
 
 ```java
 public CustomerService(EmbeddedStorageManager s) {
-    this.root = s.root();
+    this.root = s.root();    // <R> R root() — inferred from the field type, no cast needed
 }
 ```
+
+If you want the root injectable, expose it yourself as an `@Bean` in your
+`@Configuration` (e.g. `@Bean AppRoot root(EmbeddedStorageManager s) { return s.root(); }`).
 
 ## 6. Spring Boot test pollutes storage across tests
 
@@ -185,11 +199,13 @@ define each manager with distinct directories.
 @Write public void computeAndPersist() { ... }  // called from within analyze()
 ```
 
-**Symptom.** Thread re-entering with an upgraded lock request. Depending on
-`ReentrantReadWriteLock` behaviour, can throw or deadlock.
+**Symptom.** Thread holds the shared read lock and asks for the exclusive write
+lock on the same `ReentrantReadWriteLock` — the JDK does not support lock
+upgrade and the thread deadlocks waiting for itself to release the read lock.
 
 **Fix.** Don't nest read→write. Split into two public methods, one of each
-kind, called from the outside.
+kind, called from the outside (write→read downgrade IS supported by
+`ReentrantReadWriteLock`, but upgrade is not).
 
 ## 11. REST console exposed publicly
 

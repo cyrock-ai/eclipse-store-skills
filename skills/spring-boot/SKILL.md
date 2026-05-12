@@ -11,7 +11,7 @@ description: >
   for Eclipse Store", "@Read", "@Write", "@Mutex", "LockAspect", "Spring REST
   console for Eclipse Store", or needs help wiring cloud storage credentials
   through Spring config.
-version: 0.1.1
+version: 0.2.0
 ---
 
 # Eclipse Store — Spring Boot 3 Integration
@@ -22,25 +22,11 @@ access, and an optional REST console. The patterns here differ from the
 standalone storage skills because Spring owns bean lifecycle — but the
 fundamentals (root, `store()`, lazy loading, housekeeping) are identical.
 
-## When to use this skill
+## Do NOT use this skill
 
-- User is building a Spring Boot 3 app that persists with Eclipse Store.
-- User is **designing or wiring a `@Service` / `@Repository` / `@Component`
-  bean that touches persistent state** — `@Read` / `@Write` / `@Mutex`
-  placement is part of the bean's contract and is decided here, not bolted
-  on after a concurrency bug.
-- User asks about `org.eclipse.store.*` properties.
-- User wants to inject an `EmbeddedStorageManager`.
-- User is confused about `@Transactional` vs. `store()` (Spring's transactions
-  do not flush Eclipse Store).
-- User needs thread-safe mutation + store at method granularity.
-- User wants the REST console (read-only storage browser).
-
-**Route elsewhere** when:
-
-- User is writing a standalone (non-Spring) app → `getting-started` and friends.
-- User wants JCache caching via Spring (`@Cacheable`) → `cache-jcache`.
-- User wants CDI / Jakarta EE instead of Spring → not in v0.1.0 of this plugin.
+- Standalone (non-Spring) app → `getting-started` and friends.
+- JCache caching via Spring (`@Cacheable`) → `cache-jcache`.
+- CDI / Jakarta EE instead of Spring — not yet covered by this plugin.
 
 ## Mental model
 
@@ -581,13 +567,28 @@ started; call `storage.store(...)` normally.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — bean types, properties, AOP annotations.
-- `references/properties-reference.md` — every `org.eclipse.store.*` property.
-- `references/aop-aspects.md` — `@Read`/`@Write`/`@Mutex` deep dive.
-- `references/advanced-foundation-override.md` — replacing the foundation
-  factory, custom type handlers, read-only mode.
-- `references/examples-expanded.md` — five full Spring Boot apps.
-- `references/pitfalls-deep-dive.md` — each pitfall above with reproducer.
+- **Load `references/api-catalogue.md`** when you need the exact bean qualifier
+  constants, the `LockAspect` internals, `EmbeddedStorageFoundationFactory` /
+  `EmbeddedStorageManagerFactory` signatures, or the `StorageContextInitializer`
+  hook contract.
+- **Load `references/properties-reference.md`** when wiring a specific
+  `org.eclipse.store.*` property — cloud backends (AWS S3 / Azure / GCP / Oracle
+  Cloud / Redis / SQL credentials), nested AFS shapes, or non-obvious housekeeping
+  / channel knobs.
+- **Load `references/aop-aspects.md`** when designing concurrency boundaries —
+  named-lock semantics, re-entrance rules, fairness, what happens without
+  `spring-boot-starter-aop`.
+- **Load `references/advanced-foundation-override.md`** when properties are
+  insufficient — custom type handlers in Spring, read-only mode,
+  multi-storage with `@Qualifier`, the upstream `spring-boot3-advanced`
+  example shape.
+- **Load `references/examples-expanded.md`** when you want a complete runnable
+  Spring Boot app — full bootstrap with REST controller, `@Mutex`-per-aggregate
+  service layer, profile-driven cloud storage, `@SpringBootTest` with
+  `@DynamicPropertySource`.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a Spring-side bug
+  — missing AOP starter, root-class no-arg-ctor failure, `@Transactional`
+  confusion, two managers at the same directory, REST console in production.
 
 ## Upstream sources
 
