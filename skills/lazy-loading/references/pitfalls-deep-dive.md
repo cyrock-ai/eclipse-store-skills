@@ -219,16 +219,33 @@ by housekeeping).
 **Root cause.** Replacing the wrapper creates a fresh entity; the old wrapper is
 unreferenced.
 
-**Fix.** `Lazy` exposes no public setter. Populate the existing wrapper's target in
-place:
+**Fix.** `Lazy` exposes no public setter (only `$setLoader`, which is framework-
+internal). Don't go through the `Reference(null) → Reference(value)` path at all.
+Either pattern works:
+
+**Pattern 1 — initialize with an empty collection, mutate in place:**
 
 ```java
-ArrayList<X> inner = lst.get();   // load (or get the already-loaded ref)
-inner.clear();
+private Lazy<ArrayList<X>> lst = Lazy.Reference(new ArrayList<>());
+// later:
+ArrayList<X> inner = lst.get();
 inner.addAll(newData);
-storage.store(inner);
+storage.store(inner);            // store the inner collection, see SKILL Pattern A
 ```
 
-If the field MUST be replaced (different concrete subtype, fresh wrapper), accept
-the orphaning — the old chain becomes GC'd by housekeeping. In general, prefer to
-initialize the Lazy once and mutate its contents.
+**Pattern 2 — leave the FIELD null until first use, assign once:**
+
+```java
+private Lazy<ArrayList<X>> lst;   // null until first use
+// later:
+if (lst == null) {
+    lst = Lazy.Reference(new ArrayList<>(newData));
+    storage.store(containing);    // store the parent so its Lazy field is recorded
+} else {
+    lst.get().addAll(newData);
+    storage.store(lst.get());
+}
+```
+
+`Reference(null)` is the worst of both: a real persisted wrapper that holds no
+value, which then forces the orphaning reassignment.
