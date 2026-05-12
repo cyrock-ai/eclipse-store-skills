@@ -10,7 +10,7 @@ description: >
   "include type info in serialized output", "send Java objects over the network",
   or needs a serializer that can replace Java serialization / Jackson for
   Java-to-Java transport.
-version: 0.1.1
+version: 0.2.0
 ---
 
 # Eclipse Serializer — Standalone Use (Without Storage)
@@ -21,22 +21,12 @@ serialization it is faster and does not need `Serializable`. Compared to JSON it
 smaller and preserves reference identity (including circular references) — which is
 exactly what an RPC layer or a disk cache wants.
 
-## When to use this skill
+## Do NOT use this skill
 
-- User wants to serialize a Java object graph to bytes and back.
-- User is choosing a replacement for Java serialization / Jackson / Kryo.
-- User asks about `Serializer.Bytes()`, `TypedSerializer`, `SerializerFoundation`.
-- User needs to include type info in the output so a peer can deserialize without
-  pre-registration.
-- User is wiring serialization into a message queue, HTTP body, or disk cache.
-
-**Route elsewhere** when:
-
-- User is actually using Eclipse Store → all the storage skills (`storing-data`,
-  `root-and-object-graph`, etc.) build on this serializer but wrap it.
-- User needs custom handlers → `custom-type-handlers`.
-- User is persisting a long-lived database → that's Eclipse Store, not the
-  standalone serializer.
+- Using Eclipse Store — the storage skills (`storing-data`, `root-and-object-graph`,
+  etc.) wrap this serializer; go directly to them.
+- Needing custom handlers → `custom-type-handlers`.
+- Persisting a long-lived database → Eclipse Store, not the standalone serializer.
 
 ## Mental model
 
@@ -89,7 +79,7 @@ Instance methods on `Serializer<M>` (which `extends AutoCloseable`):
 | `M serialize(Object)` | `M` | Serialize one graph. |
 | `<T> T deserialize(M)` | `T` | Deserialize; caller types the return via the assignment. |
 | `String exportTypeDictionary()` | the dictionary text | Useful for diagnosing peer-vs-peer disagreement. |
-| `void close()` | — | Truncates the object registry and closes the persistence manager. Use try-with-resources for one-shot serializers. |
+| `void close() throws Exception` | — | Truncates the object registry and closes the persistence manager. Inherited from `AutoCloseable` — try-with-resources callers must declare `throws Exception` (or wrap in `assertDoesNotThrow` / a runtime rethrow). The default impl never actually throws. |
 
 ## Idiomatic patterns
 
@@ -352,12 +342,23 @@ has no built-in adapters.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — every factory, method, and strategy option.
-- `references/examples-expanded.md` — five scenarios: basic, typed, streaming,
-  HTTP body, RPC server/client.
-- `references/typed-vs-untyped.md` — decision guide with worked examples.
-- `references/performance-tuning.md` — foundation options that affect throughput.
-- `references/pitfalls-deep-dive.md` — each pitfall above with reproducer.
+- **Load `references/api-catalogue.md`** when you need a factory/method not in the
+  in-line Core API — e.g. `Serializer.New(...)` for a custom medium, `Binary`
+  medium specifics, the full `SerializerFoundation` method surface, or the
+  six `SerializerTypeInfoStrategyCreator` variants (`TypeDictionary` /
+  `Diff` / `IncrementalDiff`, each in `(false)` / `(true)` form).
+- **Load `references/examples-expanded.md`** when you want a complete runnable
+  template — default round-trip, registered types, circular references,
+  `TypedSerializer` for an MQ, `Diff` strategy, per-thread pool via `ThreadLocal`,
+  a mini RPC server/client, JCache value-serializer skeleton, JUnit round-trip.
+- **Load `references/typed-vs-untyped.md`** when deciding between
+  `Serializer.Bytes()` and `TypedSerializer.Bytes()` — wire-size, peer
+  pre-registration cost, schema-evolution tolerance.
+- **Load `references/performance-tuning.md`** when throughput or size matters —
+  pre-registration, strategy choice, per-thread reuse, foundation options.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a serializer bug —
+  cross-process schema disagreement, JVM-resource serialization, mid-serialize
+  mutation, threading corruption.
 
 ## Upstream sources
 
