@@ -69,7 +69,7 @@ type dictionary is enough.
 ```java
 import org.eclipse.serializer.TypedSerializer;
 import org.eclipse.serializer.SerializerFoundation;
-import org.eclipse.serializer.persistence.binary.types.SerializerTypeInfoStrategyCreator;
+import org.eclipse.serializer.SerializerTypeInfoStrategyCreator;
 
 SerializerFoundation<?> sf = SerializerFoundation.New()
     .registerEntityTypes(Customer.class, Order.class, Product.class)

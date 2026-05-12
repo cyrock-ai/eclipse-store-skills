@@ -32,7 +32,7 @@ adapter through `Serializer.New(toMedium, toBinary)`.
 | `M serialize(Object)` | Returns the encoded graph. Synchronized internally on `Default`. |
 | `<T> T deserialize(M)` | Caller types the return via the assignment. |
 | `String exportTypeDictionary()` | Diagnostic: the type dictionary the serializer currently knows. |
-| `void close()` | Inherited from `AutoCloseable`. Truncates the object registry and closes the persistence manager. Use try-with-resources for one-shot serializers. |
+| `void close() throws Exception` | Inherited from `AutoCloseable` (the `Serializer` interface does NOT narrow the throws clause). Truncates the object registry and closes the persistence manager. The default impl never throws, but callers using try-with-resources must declare `throws Exception` (or wrap). |
 
 ### Thread safety
 
