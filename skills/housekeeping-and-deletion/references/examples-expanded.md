@@ -81,15 +81,16 @@ Ops wants to spend at most 60 s on housekeeping per night.
 ```java
 long budget = Duration.ofSeconds(20).toNanos();
 
-boolean gcDone    = storage.issueGarbageCollection(budget);
-boolean cacheDone = storage.issueCacheCheck(budget);
-boolean fileDone  = storage.issueFileCheck(budget);
+boolean gcDone     = storage.issueGarbageCollection(budget);
+boolean fileDone   = storage.issueFileCheck(budget);
+boolean cacheEmpty = storage.issueCacheCheck(budget);          // see note below
 
-System.out.println("gc=" + gcDone + " cache=" + cacheDone + " file=" + fileDone);
+System.out.println("gc=" + gcDone + " file=" + fileDone + " cacheEmpty=" + cacheEmpty);
 ```
 
-Any `false` means the operation needs more time; run the same call again in the next
-window.
+`gcDone` / `fileDone` are completion flags: `false` means more time is needed; call
+again next window. `cacheEmpty` is **not** a completion flag — it returns whether
+the entity cache size is or became 0. A hot service typically reports `false`.
 
 ## Example 6 — Custom file evaluator at startup
 

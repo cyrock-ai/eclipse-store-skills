@@ -10,7 +10,7 @@ description: >
   adaptive", "entity-cache-timeout", "data-file-minimum-use-ratio", or is confused
   about why freshly deleted objects still take disk space or are still visible in a
   raw file scan.
-version: 0.1.0
+version: 0.3.0
 ---
 
 # Eclipse Store — Housekeeping & Deletion
@@ -20,21 +20,11 @@ and letting housekeeping's garbage collector detect unreachable objects. This sk
 covers both halves: how to delete correctly, and how housekeeping actually frees the
 bytes.
 
-## When to use this skill
+## Do NOT use this skill
 
-- User wants to delete an object, a collection element, a whole subgraph.
-- User asks why a "deleted" object still shows on disk size.
-- User is tuning housekeeping interval, budget, adaptive mode.
-- User asks about file compaction, `data-file-minimum-use-ratio`, data-file size
-  thresholds.
-- User wants to trigger GC / cache check / file check manually.
-- User's entity cache is too large or too small.
-
-**Route elsewhere** when:
-
-- User is confused about `store()` cascading, not deletion → `storing-data`.
-- User wants to reduce load time, not delete → `lazy-loading`.
-- User wants to migrate to a new class shape → `legacy-type-mapping`.
+- Confused about `store()` cascading, not deletion → `storing-data`.
+- Reducing load time, not deleting → `lazy-loading`.
+- Migrating to a new class shape → `legacy-type-mapping`.
 
 ## Mental model
 
@@ -68,11 +58,11 @@ From `EmbeddedStorageManager` (which implements `StorageConnection`):
 | Method | Purpose |
 |---|---|
 | `void issueFullGarbageCollection()` | Run GC to completion, regardless of time. |
-| `boolean issueGarbageCollection(long nanoBudget)` | Time-boxed GC; returns true if complete. |
+| `boolean issueGarbageCollection(long nanoBudget)` | Time-boxed GC; returns `true` iff complete. |
 | `void issueFullCacheCheck()` / `(StorageEntityCacheEvaluator)` | Full cache eviction scan. |
-| `boolean issueCacheCheck(long nanoBudget)` / `(long, ...)` | Time-boxed cache scan. |
+| `boolean issueCacheCheck(long nanoBudget)` / `(long, ...)` | Time-boxed cache scan. Returns `true` **iff the used cache size is (or became) 0** — NOT a "did it finish" flag. |
 | `void issueFullFileCheck()` | Full file compaction scan. |
-| `boolean issueFileCheck(long nanoBudget)` | Time-boxed file scan. |
+| `boolean issueFileCheck(long nanoBudget)` | Time-boxed file scan; returns `true` iff complete. |
 
 And the config properties already covered in `configuration`:
 
@@ -173,21 +163,39 @@ try {
 root.orders().clear();
 storage.store(root.orders());
 
-storage.issueFullGarbageCollection();
-storage.issueFullFileCheck();      // compact now
+storage.issueFullGarbageCollection();    // mark unreachable
+storage.issueFullFileCheck();            // dissolve eligible (non-head) files
 ```
+
+`issueFullFileCheck` dissolves data files whose payload ratio dropped below
+`data-file-minimum-use-ratio` (default 0.75) — **except the currently-active head
+file**, which is only compacted when `data-file-cleanup-head-file = true` (rarely
+worth it; see Anti-pattern 4 for the cost).
+
+A single Pattern G call does NOT guarantee immediate shrinkage with default config:
+- Small workloads that fit in a single head file are skipped entirely.
+- Even on multi-file workloads, the gap-tracking inside file metadata is updated
+  progressively across housekeeping cycles — one synchronous pair of calls may not
+  drop enough files below the 0.75 threshold to be visible on disk.
+
+Reliable urgent shrinkage requires either a maintenance window (let the daemon run
+multiple cycles), `shutdown()` between calls (forces the dispatched dissolve work
+to drain), or a tuned `StorageDataFileEvaluator` with aggressive thresholds (see
+`references/api-catalogue.md`).
 
 ### Pattern H — Time-boxed manual run on a maintenance window
 
 ```java
 long budget = Duration.ofSeconds(30).toNanos();
-storage.issueGarbageCollection(budget);
-storage.issueFileCheck(budget);
-storage.issueCacheCheck(budget);
+boolean gcDone     = storage.issueGarbageCollection(budget);   // true = GC complete
+boolean fileDone   = storage.issueFileCheck(budget);           // true = file check complete
+boolean cacheEmpty = storage.issueCacheCheck(budget);          // true iff cache size is now 0
 ```
 
-`issue*` with a budget returns `true` if the work finished within the budget,
-`false` if it was cut off. Call again if not complete.
+`issueGarbageCollection` and `issueFileCheck` return `true` when the work finished
+within the budget — call again if `false`. `issueCacheCheck` does **not** report
+completion; it returns whether the in-memory entity cache became empty. On a hot
+service with valid cached entries, expect `false` even after a successful pass.
 
 ### Pattern I — Enable adaptive housekeeping
 
@@ -266,11 +274,13 @@ amplification.
 
 Equivalent to "never compact". Disk grows without bound.
 
-### Anti-pattern 6 — Forgetting that GC respects strong references from JVM statics
+### Anti-pattern 6 — Confusing JVM GC with Eclipse Store's persistent GC
 
-If your app's domain code holds a static reference to the entity you just "deleted",
-it stays alive — GC only sees the *persistent* graph. This is rarely a problem unless
-code is designed around JVM-static references to persisted objects.
+A JVM-static reference to a persisted entity keeps the *in-memory* object alive (JVM
+GC won't reclaim it), but does NOT prevent Eclipse Store from deleting the entity from
+disk once it's unreachable in the *persistent* graph. After the persistent GC pass,
+the static reference points to a stale in-memory copy. Don't design domain code around
+JVM-static references to persisted objects.
 
 ## Pitfalls & gotchas
 
@@ -312,10 +322,6 @@ parent. Done.
 the next housekeeping cycle. For urgency: `issueFullGarbageCollection()` +
 `issueFullFileCheck()` on a maintenance window.
 
-**"How do I know when housekeeping catches up?"** → The daemon runs on every
-interval; within a few cycles of the deletion, disk size should drop. Or instrument
-`issueGarbageCollection(budget)` returning true.
-
 **"My entity cache is eating memory."** → Tune `entity-cache-timeout` down (e.g.
 `1h`), or call `issueFullCacheCheck()` manually in an idle period.
 
@@ -330,18 +336,19 @@ sensible.
 effectively disables it. Don't — it defers work, doesn't eliminate it, and the first
 cycle after you re-enable can be a giant stall.
 
-**"What counts as `entity-cache-threshold`?"** → It's an abstract weighting of
-cached entity data size × idle time. A higher number means evict more aggressively
-when memory pressure appears. Default is "essentially infinite" for most apps.
-
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — full `issue*` method signatures, evaluator types.
-- `references/examples-expanded.md` — five deletion examples and three manual-
-  housekeeping patterns.
-- `references/pitfalls-deep-dive.md` — each pitfall above with reproducer and fix.
-- `references/gc-scheduling-math.md` — how interval + budget interact, worked example
-  calculating CPU usage.
+- **Load `references/api-catalogue.md`** when you need a full `issue*` signature,
+  an evaluator factory (`StorageEntityCacheEvaluator`, `StorageDataFileEvaluator`),
+  or the foundation wiring for a custom `StorageHousekeepingController`.
+- **Load `references/examples-expanded.md`** when you want a runnable deletion or
+  manual-housekeeping template — lock-guarded deletion, bulk delete + forced GC,
+  custom file evaluator on the foundation, INI tuning.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a "delete didn't
+  work" symptom — stored child instead of parent, no disk shrinkage, lazy
+  collection mutation lost, transaction files growing.
+- **Load `references/gc-scheduling-math.md`** when sizing the housekeeping budget
+  for a known write rate or deciding whether to enable adaptive housekeeping.
 
 ## Upstream sources
 
