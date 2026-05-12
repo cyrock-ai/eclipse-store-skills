@@ -19,8 +19,8 @@ File: `storage/storage/src/main/java/org/eclipse/store/storage/types/StorageConn
 |---|---|---|
 | `void issueFullCacheCheck()` | Yes | Full pass using the default `StorageEntityCacheEvaluator`. |
 | `void issueFullCacheCheck(StorageEntityCacheEvaluator)` | Yes | With a custom evaluator. |
-| `boolean issueCacheCheck(long nanoTimeBudget)` | Yes, up to budget | Returns true if done. |
-| `boolean issueCacheCheck(long nanoTimeBudget, StorageEntityCacheEvaluator)` | Yes, up to budget | |
+| `boolean issueCacheCheck(long nanoTimeBudget)` | Yes, up to budget | Returns `true` **iff the used cache size is or became 0**, NOT "did it finish within budget". On a non-empty live cache, expect `false` even after a complete pass. |
+| `boolean issueCacheCheck(long nanoTimeBudget, StorageEntityCacheEvaluator)` | Yes, up to budget | Same semantics as above with a custom evaluator. |
 
 ### File check (compaction)
 
@@ -72,9 +72,12 @@ File: `storage/storage/.../StorageHousekeepingController.java`.
 Supplies interval + budget. Factory:
 
 ```java
-StorageHousekeepingController.New(long interval, long budget);
+StorageHousekeepingController.New(long intervalMs, long timeBudgetNs);
 StorageHousekeepingController.Adaptive(...);
 ```
+
+Units differ: interval in **milliseconds**, budget in **nanoseconds**. The
+`Duration.toNanos()` / `Duration.toMillis()` helpers avoid mistakes.
 
 The adaptive variant raises the budget when GC persistently falls behind. Wire via the
 foundation:
