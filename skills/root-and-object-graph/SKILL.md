@@ -20,7 +20,7 @@ description: >
   root", or needs help deciding whether to use a bare object, a collection, or
   a dedicated root class, and how to structure the top of the object graph for
   maintainability and performance.
-version: 0.1.1
+version: 0.2.0
 ---
 
 # Eclipse Store — Root Instance & Object Graph Design
@@ -29,38 +29,12 @@ Every Eclipse Store database has exactly one **root** — a single Java object t
 persistent entry point to everything else. Design the root well and the rest of the app
 is easy; design it poorly and you'll fight the library on every store and load.
 
-## When to use this skill
+## Do NOT use this skill
 
-**Design-time triggers (apply proactively, even without explicit "root" keywords):**
-
-- User is designing or reviewing the **persistent object model** — entities,
-  aggregates, the top-level containers that will sit under the root. The root
-  shape is the model shape; the two cannot be designed separately.
-- User is adding a **new top-level concept** (a new entity type, a new
-  registry, a new sub-aggregate) and asking where it should hang off the root.
-- User is **refactoring** an existing root that has grown into a god object,
-  or splitting one container into several.
-- User is designing a class that will hold collections of persistent entities
-  — choice between a plain field, a `Map`/`List`, a custom container, or a
-  `GigaMap` is decided here.
-
-**Reactive triggers:**
-
-- Is about to write the class they'll pass to `EmbeddedStorage.start(root, …)`.
-- Asks what should be stored "at the top" of the graph.
-- Is debating between passing a `Map`, a `List`, or a custom `AppRoot` class.
-- Wants to use `defaultRoot()` vs. `customRoot()` and doesn't know the difference.
-- Needs to register constant instances that must be associated with persisted state
-  across restarts.
-- Is seeing a cast error when calling `storage.root()`.
-- Has a root that became a "god object" and wants to refactor.
-
-**Route elsewhere** when the user asks:
-
-- How to bootstrap the manager itself → `getting-started`.
-- How to persist children of the root → `storing-data`.
-- How to defer loading of large subgraphs of the root → `lazy-loading`.
-- How to rename a field in the root or split it into two → `legacy-type-mapping`.
+- Bootstrapping the manager itself → `getting-started`.
+- Persisting children of the root → `storing-data`.
+- Deferring loading of large subgraphs of the root → `lazy-loading`.
+- Renaming a field on the root or splitting it into two → `legacy-type-mapping`.
 
 ## Mental model
 
@@ -337,9 +311,6 @@ public class AppRoot {
 }
 ```
 
-**"Can the root implement `Serializable`?"** → Yes, but it's irrelevant — Eclipse Store
-does not use Java serialization. The marker is harmless.
-
 **"Do I need a no-arg constructor on my root?"** → No, Eclipse Store instantiates
 objects via reflection without invoking constructors (it uses `sun.misc.Unsafe`-style
 allocation). **Exception**: in Spring Boot integration, the root *does* need a public
@@ -357,12 +328,18 @@ the graph if you can avoid it).
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — exact method signatures for `root()`, `setRoot()`,
-  `defaultRoot()`, `customRoot()`, `storeRoot()`.
-- `references/examples-expanded.md` — a realistic `AppRoot` (customers, orders,
-  settings, audit) + full bootstrap + threaded update loop.
-- `references/pitfalls-deep-dive.md` — each pitfall above with a minimal reproducer
-  and fix.
+- **Load `references/api-catalogue.md`** when you need a `StorageManager` method
+  not in the in-line Core API table (e.g. `viewRoots()`), the connection-foundation
+  hooks for `registerRoot(...)` / `registerRootSupplier(...)` / `registerRootSuppliers(...)`,
+  or the `XThreads.executeSynchronized` Runnable/Supplier overloads.
+- **Load `references/examples-expanded.md`** when you want a complete runnable
+  template — realistic `AppRoot` with `Lazy<>`-wrapped audit, the canonical
+  `Bootstrap` static-initializer pattern, per-aggregate `ReentrantReadWriteLock`
+  service, default-root seeder, full-root migration with `setRoot`.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a root-related bug
+  — `root()` returns `null`, cast failures, slow startup (eager graph), `storeRoot()`
+  not persisting nested mutations, reassigning a collection field, Spring Boot
+  no-arg-constructor requirement, registering a constant after `.start()`.
 
 ## Upstream sources
 
