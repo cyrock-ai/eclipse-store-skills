@@ -23,7 +23,7 @@ description: >
   "createStorer", "eager storer", "lazy storer", "bulk insert", "store a
   list", "transaction", "commit", "hidden field not stored", or is confused
   about why a mutation didn't persist after `store()`.
-version: 0.1.1
+version: 0.2.0
 ---
 
 # Eclipse Store — Storing Data
@@ -32,41 +32,13 @@ This skill is the single most common source of bugs for newcomers. The library d
 have "dirty tracking", and it does not crawl the graph after every mutation looking for
 changes. **You tell it what changed.** Everything in this skill stems from that one fact.
 
-## When to use this skill
+## Do NOT use this skill
 
-**Design-time triggers (apply proactively, even without explicit `store()` keywords):**
-
-- User is **designing or extending a service / repository / facade /
-  controller method** that mutates persistent state. Every such method is
-  implicitly a critical section that must end in `store(...)`; deciding
-  *what* to pass to `store(...)` (the mutated leaf? a parent collection? the
-  whole subtree via an eager storer?) shapes the method's contract.
-- User is **designing a bulk import / migration / seeding routine** — the
-  choice between many small `store(...)` calls, a single `BatchStorer`, or an
-  eager storer is decided here, before the loop is written.
-- User is **adding a new persistent field** that mutates after the entity is
-  first stored — confirm whether the parent's existing `store(...)` site
-  walks deeply enough, or whether a new `store(...)` call is needed.
-- Code review surfaces a graph mutation, a collection `add`/`remove`, or a
-  field assignment on a persisted object — verify the matching `store(...)`
-  call exists and reaches the mutated object.
-
-**Reactive triggers:**
-
-- User is about to call `store()`, `storeAll()`, `storeRoot()`, or `createStorer()`.
-- User reports "I mutated X and called `store()`, but the change isn't on disk".
-- User wants to bulk-insert and is asking about performance / batch APIs.
-- User is reading about eager vs. lazy storing and needs to choose.
-- User has a private/hidden field that isn't being persisted.
-- User wants a "transaction" spanning multiple objects.
-
-**Route elsewhere** when:
-
-- User doesn't have storage set up yet → `getting-started`.
-- User is designing their root object → `root-and-object-graph`.
-- User wants to defer *loading* (not storing) → `lazy-loading`.
-- User is wiring storing behaviour into Spring → `spring-boot` (but the rules here
-  still apply inside services).
+- Storage isn't set up yet → `getting-started`.
+- Designing the root object → `root-and-object-graph`.
+- Deferring **loading** (not storing) → `lazy-loading`.
+- Wiring storing into Spring → `spring-boot` (the rules here still apply inside
+  services).
 
 ## Mental model
 
@@ -454,22 +426,27 @@ Two unrelated concepts that share a word.
 `.start()`, any partial tail is truncated. Your in-memory graph may still be mutated,
 though — that's your application's concern.
 
-**"Can I have a read-only manager?"** → Yes, configure `StorageConfiguration` with a
-read-only `StorageLiveFileProvider` or use configuration properties. Store calls will
-throw. See `configuration`.
-
 **"Does `store()` block concurrent reads?"** → At the disk level the store is atomic
 and fast. The library itself does not block your reads — but your application-level
 locks (writeLock vs. readLock) govern that.
 
 ## Deeper lookups (on-demand)
 
-- `references/api-catalogue.md` — every method signature on `Storer`, `BatchStorer`,
-  and relevant `EmbeddedStorageManager` methods, plus the eager-field-evaluator API.
-- `references/examples-expanded.md` — four full examples: single store, manual storer
-  multi-object transaction, `BatchStorer` ingest, eager field evaluator for hidden fields.
-- `references/pitfalls-deep-dive.md` — each pitfall above with a minimal reproducer and
-  fix.
+- **Load `references/api-catalogue.md`** when you need a `Storer` method not in
+  the in-line Core API (e.g. `skip(Object)`, `skipMapped`, `clear()`,
+  `reinitialize`, capacity hints, commit listeners), the full
+  `BatchStorer.Builder` surface (`maxSize` / `flushCycle` / `checkInterval`
+  defaults and constraints), or the `setReferenceFieldEagerEvaluator` hook.
+- **Load `references/examples-expanded.md`** when you want a runnable template
+  — full `CustomerService` with three mutation patterns, multi-object `Storer`
+  transaction, `BatchStorer` ingest with `@TempDir`, eager-field-evaluator
+  wiring on the foundation, `Storer.registerRegistrationListener` for audit,
+  lazy-vs-eager walk visualised side by side.
+- **Load `references/pitfalls-deep-dive.md`** when diagnosing a missing-store
+  bug — child stored without parent, in-place mutation skipped by lazy walk,
+  immutable confusion, loop-of-stores `O(n²)`, `storeAll(Object[])` array
+  mistake, `Storer` without `commit()`, sharing `Storer` across threads,
+  hidden field with no getter, atomicity illusion across multiple `store()`s.
 
 ## Upstream sources
 
