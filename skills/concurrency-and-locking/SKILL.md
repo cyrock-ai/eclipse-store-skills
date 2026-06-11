@@ -26,7 +26,7 @@ description: >
   "gigaMap.store vs storageManager.store", "iterators leaking read locks",
   "stress-test concurrent writes", or asks why a multi-threaded app is
   producing inconsistent state on disk.
-version: 0.3.0
+version: 0.4.0
 ---
 
 # Eclipse Store — Concurrent Access and Locking
@@ -237,13 +237,18 @@ the manual patterns: the lock must span both the mutation and the
    The former holds the internal lock for the duration of the store;
    the latter bypasses it and fails under concurrent mutation.
 3. **Iterators must be closed** (try-with-resources). A leaked iterator
-   holds the read lock open and starves writers.
-4. **The internal lock covers GigaMap operations only.** Elements held
+   holds the read lock open and starves writers; a mutation from the
+   thread that still holds the open iterator throws
+   `IllegalStateException` ("Self-deadlock detected").
+4. **Do not mutate the map from inside `forEach` / `iterate` / a query
+   consumer.** It throws `IllegalStateException`. Collect matches first,
+   mutate after the iteration. `store()` during iteration is allowed.
+5. **The internal lock covers GigaMap operations only.** Elements held
    in the GigaMap can still be mutated by another thread during the
    store walk — the GigaMap itself stays consistent, but the persisted
    element graph may not. Application-level synchronization around
    element mutation + storing is still needed.
-5. **Cross-aggregate atomicity is your job.** GigaMap mutation + other
+6. **Cross-aggregate atomicity is your job.** GigaMap mutation + other
    graph changes inside one business operation needs an
    application-level lock spanning both.
 

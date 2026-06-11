@@ -34,7 +34,7 @@ description: >
   "on-disk vector index", "eventual indexing", "embedded vs computed vectors".
   Eclipse Store ships an HNSW vector index via the `gigamap-jvector` artifact
   that integrates with bitmap / Lucene via sub-queries.
-version: 0.4.1
+version: 0.5.0
 ---
 
 # Eclipse Store — GigaMap (Indexed, Queryable, Lazy Large Collections)
@@ -365,7 +365,9 @@ try (var it = map.query(PersonIndices.lastName.is("Smith")).iterator()) {
 }
 ```
 
-Deadlock follows silently if you forget.
+If you forget: a mutation from the thread that still holds the open iterator
+throws `IllegalStateException` ("Self-deadlock detected"); writers on other
+threads wait until the iterator is closed — potentially forever.
 
 ### Pattern G — Query DSL (boolean / range / predicate / multi-value)
 
@@ -503,9 +505,13 @@ GigaMap's invariants. Handle the duplicate at the domain level.
    Cross-aggregate atomicity (GigaMap mutation + other graph changes) needs
    an application-level lock spanning both. See `concurrency-and-locking`.
 3. **Null forbidden.** `map.add(null)` throws. Use sentinels for "absent".
-4. **Query results are views.** Lazy iteration; don't assume stability
+4. **No structural modification during iteration.** Calling `add` / `remove` /
+   `update` / `apply` from inside `forEach` / `iterate` / a query consumer
+   throws `IllegalStateException`. Collect matches first, mutate after the
+   iteration. `store()` during iteration is allowed.
+5. **Query results are views.** Lazy iteration; don't assume stability
    across mutation.
-5. **Sub-queries must come from the same GigaMap.** Combining queries across
+6. **Sub-queries must come from the same GigaMap.** Combining queries across
    maps is invalid.
 
 ## Symptom → fix
@@ -515,7 +521,9 @@ GigaMap's invariants. Handle the duplicate at the domain level.
 | `BinaryPersistenceException: Inconsistent element count` | `storageManager.store(map)` ran concurrently with a mutation. | `map.store()` (acquires internal lock). |
 | `UniqueConstraintViolationException` | Duplicate on a `.withBitmapUniqueIndex(...)` field. | Handle the duplicate at the domain level; do not swallow. |
 | Queries return stale data after a setter call. | Direct field mutation bypassed the indices. | `map.update(e, mutator)` / `map.apply(e, fn)`. |
-| Reader threads deadlock under load. | A query iterator wasn't closed → read lock held. | Try-with-resources on every iterator. |
+| Writers block / time out under load. | A query iterator wasn't closed → read lock held. | Try-with-resources on every iterator. |
+| `IllegalStateException: Self-deadlock detected...` | Mutation on the thread that still holds an open iterator. | Close the iterator (try-with-resources) before mutating. |
+| `IllegalStateException: ...must not be structurally modified during iteration.` | `add` / `remove` / `update` called inside `forEach` / `iterate` / a query consumer. | Collect first, mutate after the iteration. |
 | Removes / updates are slow on a large map. | No identity index — falls back to compound search. | Add `.withBitmapIdentityIndex(idIndexer)` to the builder. |
 | `map.index().register(Category())` returned `null`. | Category already attached (post-deserialization run). | Guard: `var i = map.index().get(SomeIndices.class); if (i == null) i = map.index().register(SomeIndices.Category(...));` |
 | `LockObtainFailedException: Lock held by this virtual machine` on second `EmbeddedStorage.start(...)`. | `LuceneIndex` / `VectorIndex` weren't closed before `storage.close()`; the on-disk `write.lock` survives in the same JVM. | Close them explicitly before storage close: `luceneIndex.close(); vectorIndex.close(); storage.close();` |
@@ -560,7 +568,7 @@ GigaMap's invariants. Handle the duplicate at the domain level.
   pattern.
 - **Load `references/pitfalls-deep-dive.md`** when diagnosing a bug —
   `BinaryPersistenceException`, `UniqueConstraintViolationException`,
-  stale query results after a setter call, reader-thread deadlock,
+  stale query results after a setter call, starved writers / self-deadlock,
   vectorizer null / thread-safety / dimension-mismatch errors.
 
 ## Upstream sources

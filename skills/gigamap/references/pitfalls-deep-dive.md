@@ -39,11 +39,18 @@ return `p`.
 
 ```java
 Iterator<Person> it = map.query(...).iterator();
-while (it.hasNext()) process(it.next());
-// no close; next store() blocks
+process(it.next());
+// loop abandoned before exhaustion, no close → read lock stays held
 ```
 
-**Symptom.** Deadlock or very long waits on subsequent `store()` / writes.
+**Symptom.** Writes (`add` / `remove` / `update` / `apply`) from other threads
+block indefinitely; a write from the thread that holds the iterator throws
+`IllegalStateException` ("Self-deadlock detected"). `store()` is not affected —
+it does not take the read lock.
+
+**Root cause.** An iterator registers as a reader and holds the map's read
+lock until closed. A fully drained iterator closes itself on the final
+`hasNext()`; an abandoned one never does.
 
 **Fix.** Always try-with-resources.
 
