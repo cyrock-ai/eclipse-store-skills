@@ -1,5 +1,7 @@
 # Pitfalls deep-dive — gigamap
 
+Verified against Eclipse Store 4.3.0.
+
 ## 1. `storageManager.store(gigaMap)` races with CRUD
 
 **Reproducer.**
@@ -14,7 +16,8 @@ storageManager.store(map);   // can throw
 **Root cause.** `storageManager.store` doesn't acquire GigaMap's internal lock.
 A concurrent mutation changes element count mid-serialize.
 
-**Fix.** Use `map.store()` instead. It takes the lock.
+**Fix.** Use `map.store()` instead. It takes the lock. For one commit across
+several maps, `map.store(storer)` + `storer.commit()`.
 
 ## 2. Mutating entities without `update`/`apply`
 
@@ -27,11 +30,14 @@ map.store();
 ```
 
 **Symptom.** Queries for "Brown" return nothing; queries for "Smith" still
-return `p`.
+return `p`. A later `map.update(p, …)` does not help (the old keys are gone),
+and a later `set` / `update` may throw `StaleIndexException`.
 
-**Root cause.** Indices didn't learn about the change.
+**Root cause.** Indices are a derived cache keyed by the values the indexer
+saw at `add` / `update` time; nothing tracks direct field writes.
 
-**Fix.** `map.update(p, x -> x.setLastName("Brown"))`.
+**Fix.** `map.update(p, x -> x.setLastName("Brown"))`. If it already happened:
+`storageManager.store(p); map.reindex(); map.store();`.
 
 ## 3. Forgetting to close iterators
 
@@ -39,11 +45,18 @@ return `p`.
 
 ```java
 Iterator<Person> it = map.query(...).iterator();
-while (it.hasNext()) process(it.next());
-// no close; next store() blocks
+process(it.next());
+// loop abandoned before exhaustion, no close → read lock stays held
 ```
 
-**Symptom.** Deadlock or very long waits on subsequent `store()` / writes.
+**Symptom.** Writes (`add` / `remove` / `update` / `apply`) from other threads
+block indefinitely; a write from the thread that holds the iterator throws
+`IllegalStateException` ("Self-deadlock detected"). `store()` is not affected —
+it does not take the read lock.
+
+**Root cause.** An iterator registers as a reader and holds the map's read
+lock until closed. A fully drained iterator closes itself on the final
+`hasNext()`; an abandoned one never does.
 
 **Fix.** Always try-with-resources.
 
@@ -73,9 +86,6 @@ Order a = new Order("ord-1", "alice");
 Order b = new Order("ord-1", "alice");
 map.add(a);
 map.add(b);   // succeeds — identity sees them as different
-
-map.remove(b);   // works because b was added
-map.remove(a);   // works because a is present
 ```
 
 **Symptom.** Two "same" orders coexist.
@@ -89,7 +99,8 @@ say true.
 GigaMap<Order> map = GigaMap.New(XHashing.hashEqualityValue());
 ```
 
-And make sure `Order` implements `equals`/`hashCode`.
+And make sure `Order` implements `equals`/`hashCode`. To *enforce* "one order
+per id", add a unique constraint on the id — equality alone does not.
 
 ## 6. No identity index on a large map
 
@@ -99,6 +110,8 @@ And make sure `Order` implements `equals`/`hashCode`.
 **Symptom.** Slow — Eclipse Store builds a compound index on the fly.
 
 **Fix.** Always declare `.withBitmapIdentityIndex(...)` for the stable id.
+Note that an identity index does not enforce uniqueness; combine it with
+`.withBitmapUniqueIndex(...)` on the same indexer when both are wanted.
 
 ## 7. Unique constraint violation silently swallowed
 
@@ -110,33 +123,37 @@ map.store();
 ```
 
 **Symptom.** Business logic proceeds as if the add succeeded; data integrity
-problem.
+problem. On `update` / `apply` the violation also **removed** the entity.
 
 **Fix.** Handle the exception at the domain level — either update the existing
-entity or fail the operation.
+entity or fail the operation. For `update` / `apply`, re-add the entity
+carried by the exception after fixing the violation.
 
 ## 8. Wrapping GigaMap in `Lazy<>`
+
+`Lazy.Reference(GigaMap...)` works but is pointless — GigaMap is internally
+lazy. Use it as a direct field.
+
+## 9. Expecting `ensure` to change an index
 
 **Reproducer.**
 
 ```java
-private Lazy<GigaMap<Person>> people = Lazy.Reference(GigaMap.<Person>Builder()...build());
+map.index().bitmap().ensure(newLastNameLogic);                 // same name, new logic
+vectorIndices.ensure("embeddings", changedCfg, vectorizer);    // changed dimension
 ```
 
-**Symptom.** Works but is pointless — GigaMap is internally lazy. You've added a
-layer that blocks external access patterns (`Lazy.get()` hides the internal
-iteration semantics).
+**Symptom.** No error; the old index keeps its old logic / configuration.
 
-**Fix.** Use GigaMap as a direct field. It handles lazy segments itself.
+**Root cause.** `ensure` is get-or-create: an existing index is returned
+unchanged and the arguments are ignored (a changed vector location logs a
+warning). Adding an index later is fine — `add` / `ensure` back-fill from
+the existing entities, all-or-nothing — but replacing one is explicit.
 
-## 9. Modifying indexer after build
-
-You can't. The index structure is fixed at `build()`. Adding an index later
-requires scanning the entire dataset.
-
-**Fix.** Plan indices up front. If you must add later, do a migration: build a
-new GigaMap with the desired indices, copy entries over via `addAll`, swap the
-root reference.
+**Fix.** Bitmap: `bitmap().update(indexer)` (rebuilt before the old one is
+dropped, keeps unique / identity membership). Vector: `removeIndex(name)` +
+`add(...)` (re-indexes every entity); location only:
+`changeIndexLocation(name, location)` + `store()`.
 
 ## 10. Segmented iteration vs. eager `.toList()`
 
@@ -144,8 +161,9 @@ root reference.
 
 **Symptom.** OOM.
 
-**Fix.** Use `.stream()` / `.iterator()` and process in chunks; or use
-`.count()` if you only need size; or narrow the query with more conditions.
+**Fix.** Use `.stream()` / `.iterator()` and process in chunks, page with
+`.toList(offset, limit)`, use `.count()` if you only need the size, or narrow
+the query with more conditions.
 
 ## 11. Queries across multiple `GigaMap` instances
 
@@ -164,17 +182,15 @@ means joining at the application level.
 
 ## 12. Lucene / vector dependencies not on classpath
 
-**Reproducer.**
+**Reproducer.** `map.index().register(LuceneIndex.Category(ctx))` with
+`gigamap-lucene` but without `lucene-core` / `lucene-queryparser` (they are
+`provided`); or `gigamap-jvector` on a JDK below 25.
 
-```java
-builder.withLuceneIndex(...)
-```
+**Symptom.** `NoClassDefFoundError` for `org.apache.lucene.document.Document`;
+`UnsupportedClassVersionError` (class file version 69) for jvector.
 
-…without `gigamap-lucene`.
-
-**Symptom.** `NoClassDefFoundError` at build time.
-
-**Fix.** Add the optional artifact.
+**Fix.** Add the Lucene artifacts (9.8.0) yourself; run vector indices on
+Java 25+.
 
 ## 13. Vectorizer returns null
 
@@ -190,32 +206,28 @@ public class DocVectorizer extends Vectorizer<Doc> {
 map.add(new Doc("draft", null));
 ```
 
-**Symptom.** `IllegalStateException: Vectorizer returned null for entity ...`
-at `add` time.
+**Symptom.** `IllegalStateException` at `add` / `update` / `reindex` time.
 
-**Root cause.** The `Vectorizer.vectorize()` contract forbids returning
-`null` for an entity the caller is asking the index to handle.
+**Root cause.** By default `null` is treated as a vectorizer bug (fail fast).
 
-**Fix.** Don't insert entities without a vector. Either compute the vector
-before `add()`, or guard the call site:
+**Fix.** Either compute the vector before `add()`, or opt in:
 
 ```java
-if (doc.embedding() != null) {
-    map.add(doc);
-}
+@Override public boolean allowsNullVectors() { return true; }
 ```
 
-If "missing embedding" is a domain-meaningful state, hold those entities in
-a separate collection (or in the GigaMap with a bitmap "has-embedding" flag)
-and only register them with the vector index once the embedding is filled in.
+Then `null` means "no embedding": the entity stays in the map and all other
+indices, is excluded from the vector index, `getVector(id)` returns `null`,
+and `search(entity, k)` with such an entity throws `IllegalArgumentException`.
+The return value must stay constant for the index's lifetime.
 
-## 14. Vectorizer is not thread-safe
+## 14. Shared mutable buffer in the vectorizer
 
 **Reproducer.**
 
 ```java
 public class StatefulVectorizer extends Vectorizer<Doc> {
-    private float[] buffer = new float[768];      // shared mutable state!
+    private final float[] buffer = new float[768];      // shared across threads!
     @Override public float[] vectorize(Doc d) {
         for (int i = 0; i < 768; i++) buffer[i] = d.value(i);
         return buffer;
@@ -223,106 +235,93 @@ public class StatefulVectorizer extends Vectorizer<Doc> {
 }
 ```
 
-**Symptom.** Sporadically wrong vectors. `NaN` distances. `NullPointerException`
-or `AssertionError` from JVector's SIMD kernels under load.
+**Symptom.** Sporadically wrong vectors, wrong search results.
 
-**Root cause.** HNSW build/search and (in embedded mode) the optimize-time
-ForkJoinPool workers all call `vectorize()` concurrently on the **same**
-`Vectorizer` instance. Sharing mutable state corrupts vectors.
+**Root cause.** `vectorize()` is called concurrently: a search by entity runs
+alongside mutations and other searches. The index copies a computed result
+before calling the vectorizer again, so buffer reuse per se is allowed — but
+one shared array lets a call overwrite the vector another call is still
+returning. An embedded vectorizer's array is used as is (not copied).
 
-**Fix.** Make `vectorize()` allocate a fresh array per call (or return an
-already-immutable reference owned by the entity). No shared mutable state.
-
-```java
-@Override public float[] vectorize(Doc d) {
-    return d.embedding();        // entity-owned, immutable
-}
-```
-
-If you really must reuse buffers, use a `ThreadLocal<float[]>` — but
-allocating per call is fine for typical embedding sizes.
+**Fix.** Allocate per call, return the entity-owned array, or keep the
+buffer in a `ThreadLocal<float[]>`.
 
 ## 15. Dimension mismatch on add
 
 **Reproducer.**
 
 ```java
-VectorIndexConfiguration cfg = VectorIndexConfiguration.builder()
-    .dimension(768)
-    .build();
-// ...
+VectorIndexConfiguration cfg = VectorIndexConfiguration.builder().dimension(768).build();
 map.add(new Doc("oops", new float[1024]));   // wrong dim
 ```
 
-**Symptom.** Throws on `add()`.
+**Symptom.** Throws on `add()` (an index failure: the entity is kept, the
+vector index is stale for it until `reindex()`).
 
-**Root cause.** `dimension` is fixed at index build time. Every vector must
-match.
+**Root cause.** `dimension` is fixed at index build time.
 
-**Fix.** Pin `dimension` to the embedding model you use (`768` for BERT base,
-`1536` for `text-embedding-ada-002`, `3072` for `text-embedding-3-large`,
-etc.). If you migrate to a different model, register a **second** vector
-index under a new name and re-vectorize. Don't try to "extend" the first.
+**Fix.** Pin `dimension` to the embedding model (`768` BERT base, `1536`
+`text-embedding-3-small`, `3072` `text-embedding-3-large`). Migrating to
+another model means a **second** index under a new name, or `removeIndex`
++ `add` (re-vectorizes everything).
 
 ## 16. The 2.1 billion ordinal limit
 
-**Reproducer.** Insert > `Integer.MAX_VALUE` entities into a single
-`VectorIndex`.
+**Reproducer.** Entity ids of one `GigaMap` reach `Integer.MAX_VALUE`.
 
-**Symptom.** Search becomes unreliable; ordinal arithmetic overflows.
+**Symptom.** `IllegalStateException: Entity ID … exceeds maximum supported value`.
 
-**Root cause.** JVector uses `int` for graph node ordinals — ordinals are
-the GigaMap entity ids cast to `int`, so the 32-bit ceiling is hard.
+**Root cause.** JVector ordinals are the GigaMap entity ids cast to `int`.
+Every vector index on the same map shares those ids, so a second index on
+the same map does not help.
 
-**Fix.** Shard. Multiple `VectorIndex` instances per map (e.g.
-`embeddings-shard-0`, `embeddings-shard-1`), or multiple maps. Route
-inserts and searches at the application layer (consistent hashing on
-entity id is the simplest scheme; gather-and-merge top-k from all shards).
+**Fix.** Shard across **GigaMap instances** (consistent hashing on the
+entity key; gather-and-merge top-k from all shards).
 
-## 17. Forgetting `--add-modules jdk.incubator.vector`
+## 17. Missing JVM flags / wrong Java version
 
-**Reproducer.** Run on Java 20+ without the flag.
+**Reproducer.** Run `gigamap-jvector` without `--add-modules jdk.incubator.vector`,
+or without `--enable-native-access=ALL-UNNAMED`.
 
-**Symptom.** Index works, but search and indexing are noticeably slower than
-benchmarks suggest. No error.
-
-**Root cause.** JVector's SIMD kernels need the Panama Vector incubator
-module enabled. Without the flag, it falls back to scalar Java.
+**Symptom.** Scalar fallback: search and indexing noticeably slower, no
+error. Without native access, a warning about a restricted method from
+jvector's memory-mapped reader (an error on JVMs started with
+`--illegal-native-access=deny`).
 
 **Fix.**
 
 ```
-java --add-modules jdk.incubator.vector -jar app.jar
+java --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -jar app.jar
 ```
 
-For Surefire/Failsafe:
+Surefire/Failsafe: the same string in `<argLine>`. On the module path use
+`--enable-native-access=jvector`. Java 25+ is required.
 
-```xml
-<configuration>
-    <argLine>--add-modules jdk.incubator.vector</argLine>
-</configuration>
-```
-
-## 18. PQ compression silently overrides `maxDegree`
+## 18. Enabling PQ to save space
 
 **Reproducer.**
 
 ```java
-VectorIndexConfiguration.builder()
-    .dimension(768)
-    .maxDegree(64)
-    .enablePqCompression(true)
+VectorIndexConfiguration.builderForLargeDataset(768, dir)
+    .approximateScoring(ApproximateScoring.FUSED_PQ)   // "compression"
     .build();
 ```
 
-**Symptom.** No error, but `configuration.maxDegree() == 32`. Memory and
-recall numbers don't match what you set.
+**Symptom.** The graph files get **larger** (~`pqSubspaces × maxDegree`
+bytes per node on top of the inline vectors) and recall drops a little.
+`maxDegree` is **not** changed (the old "FusedPQ forces 32" rule is gone).
 
-**Root cause.** FusedPQ requires `maxDegree=32`. The configuration builder
-silently overrides when PQ is enabled.
+**Root cause.** `FUSED_PQ` stores the PQ codes of every neighbour inside
+each node to save *reads* on a graph larger than the page cache; it is an
+I/O optimisation, not compression. `forLargeDataset(dim, dir)` enables it
+by default.
 
-**Fix.** Accept the override (don't try to fight it), or disable PQ if you
-genuinely need a different `maxDegree`. Document the choice in code.
+**Fix.** To shrink the index use `vectorStorage(VectorStorage.NVQ)` (~3×
+smaller, exact scores) — `forCompactLargeDataset`. Keep `NONE` while the
+graph fits the page cache; use `FUSED_PQ` / `PQ_IN_MEMORY` only beyond it,
+and widen `minSearchBeamWidth` to hold recall. `FUSED_PQ` and `NVQ` require
+`onDisk=true`; in-memory `PQ_IN_MEMORY` requires `optimizationIntervalMs > 0`
+(the switch to compressed scoring is an O(n) rebuild under the map's lock).
 
 ## 19. `eventualIndexing=true` makes search briefly stale
 
@@ -330,63 +329,72 @@ genuinely need a different `maxDegree`. Document the choice in code.
 
 ```java
 VectorIndexConfiguration cfg = VectorIndexConfiguration.builder()
-    .dimension(768)
-    .eventualIndexing(true)
-    .build();
+    .dimension(768).eventualIndexing(true).build();
 
 map.add(newDoc);
 embeddings.search(newDoc.embedding(), 10);   // newDoc may be missing
 ```
 
-**Symptom.** A just-added document doesn't show up in search results for a
-few hundred ms.
+**Symptom.** A just-added document doesn't show up for a short window; the
+same window applies to removals and to a vector set to `null`.
 
-**Root cause.** With `eventualIndexing=true`, the **vector store** is updated
-synchronously (the data is durable) but the **HNSW graph** mutation is
-queued onto a background thread. Search runs against the graph, not the
-store.
+**Root cause.** The **vector file** is written synchronously (durable), the
+**graph** mutation is queued onto the background thread.
 
-**Fix.** Either accept the staleness (the trade-off is much lower add
-latency under load), or:
+**Fix.** Accept the staleness, call `embeddings.optimize()` (drains the queue;
+so does `close()` — `persistToDisk()` does **not** wait, it takes the pending
+operations into the segment it writes), or leave `eventualIndexing` off.
 
-- Call `embeddings.optimize()` / `embeddings.persistToDisk()` — both drain
-  the queue first.
-- Use `eventualIndexing=false` (default) for write paths where the next
-  search must see the change.
-
-## 20. Embedded-mode update temporarily degrades recall
+## 20. Computed vectorizer without a directory
 
 **Reproducer.**
 
 ```java
-// Embedded vectorizer — vector lives on the entity
-map.update(doc, d -> d.replaceEmbedding(newVector));
-// search before the next optimize() / persistToDisk()
+public class ApiVectorizer extends Vectorizer<Doc> {          // isEmbedded() == false
+    @Override public float[] vectorize(Doc d) { return api.embed(d.text()); }
+}
+indices.ensure("embeddings", VectorIndexConfiguration.forMediumDataset(1536), new ApiVectorizer());
 ```
 
-**Symptom.** Searches return the entity, but not necessarily as the top
-match for `newVector` — the graph edges still reflect `oldVector`.
+**Symptom.** Every start calls the embedding API once per entity and blocks
+every read and mutation of the map until it is done. In 4.x the vectors were
+persisted in the storage; after the upgrade an index like this refuses
+`store()` until it gets a location.
 
-**Root cause.** In embedded mode the inline update path **skips**
-JVector's `removeDeletedNodes()`. That cleanup runs on a ForkJoinPool whose
-workers call back into `parentMap.get()`, which would deadlock against
-the GigaMap monitor we hold during a synchronous mutation. Skipping is
-safe (correctness preserved — `EntityBackedVectorValues` always reads the
-latest vector), but the graph edges are slightly stale until the next
-`optimize()` or `persistToDisk()` rebuilds them outside the monitor.
+**Root cause.** The storage holds no vectors. An in-memory index without
+`indexDirectory` / `indexLocation` keeps its vector file in a temporary
+location and re-vectorizes everything at each start.
 
-**Fix.** Schedule periodic `optimize()` (manual or via
-`optimizationIntervalMs`) for write-heavy embedded-mode workloads.
-Computed mode does not have this issue — its update path replaces the
-`VectorEntry` in `vectorStore` and the graph is updated normally.
+**Fix.** `builderForMediumDataset(1536).indexDirectory(path)` or
+`.indexLocation(IndexLocation.Named("vectors"))`. For an existing 4.x
+index: `vectorIndices.changeIndexLocation("embeddings", location)` moves the
+imported vectors at once, then `map.store()`. Make the vectorizer
+deterministic — the index re-vectorizes after a crash and expects the same
+vector back.
 
-## 21. `storageManager.store(gigaMap)` with a vector index
+## 21. Index directory restored separately from the storage
 
-Same root cause and fix as Pitfall 1 — vector indices are part of the
-structure being serialized, so `map.store()` (not `storageManager.store(map)`)
-is required. The vector index's binary handlers integrate with GigaMap's
-incremental store pipeline; only changed indices are written.
+**Reproducer.** Restore last night's `storage/` but keep today's vector
+directory, or copy the storage to another machine without the index
+directory.
 
-To force a vector index's on-disk file to flush separately, call
-`vectorIndex.persistToDisk()` — different mechanism (writes `{name}.graph`
-+ `{name}.meta`), independent of the EclipseStore `storage/` directory.
+**Symptom.** JVector: the manifest's state does not match the stored index →
+the graph is rebuilt from the vector file (or every entity is re-vectorized
+when the vector file is missing). Lucene: the index is rebuilt from the
+entities on first use (warning logged), or — with a stored absolute path on
+another machine — the original directory is opened and shared.
+
+**Root cause.** On-disk index files are a derived cache tied to one storage
+state; a stored absolute path is tied to one machine.
+
+**Fix.** Back up and restore storage and index directories together, at the
+same point in time. Use `IndexLocation.Named` + `IndexLocations.bind` for
+anything that moves between machines (`index-locations.md`).
+
+## 22. `close()` / `optimize()` / `persistToDisk()` under the map's monitor
+
+`synchronized (map) { vectorIndex.optimize(); }` or calling them from
+`update` / `apply` logic throws `IllegalStateException`: they wait for work
+whose holders may need the monitor, so the index refuses instead of
+deadlocking. Call them outside the monitor — or not at all: storage shutdown
+closes every index of a loaded map.

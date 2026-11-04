@@ -2,73 +2,102 @@
 
 Companion to the SKILL.md vector section. Read this when designing the
 index shape (mode, similarity, HNSW tuning) or reasoning about recall vs.
-latency. For configuration parameters, lifecycle, on-disk format, PQ,
-background tasks, and the operational checklist → `vector-operations.md`.
+latency. For configuration parameters, lifecycle, files on disk,
+compression, background tasks, and the operational checklist →
+`vector-operations.md`. State as of Eclipse Store 4.3.0.
 
 ## 1. Mode selection: embedded vs computed
 
-`Vectorizer.isEmbedded()` is the most consequential decision in the whole
-vector setup. It is **not** something you change later without rebuilding
-the index from scratch.
+`Vectorizer.isEmbedded()` says where a vector **comes from**. In both modes
+the index keeps a copy of every vector in its memory-mapped vector file
+(`{name}.vec`), scores the same way, and the storage itself holds no
+vectors. The mode is fixed for the lifetime of the index.
 
 | Aspect | Embedded (`isEmbedded() == true`) | Computed (default, `false`) |
 |---|---|---|
-| Where the vector lives | On the entity itself (`record Doc(String text, float[] embedding)`) | In an internal `GigaMap<VectorEntry>` (the `vectorStore`) |
-| When `vectorize()` runs | On every graph build/search hit (cached per-search) | Once at `gigaMap.add(entity)` |
-| Storage overhead | None — vector is part of the entity | One `VectorEntry(entityId, float[])` per entity |
-| API call cost on restart | None — vector reloaded with the entity | None — `vectorStore` reloads with the GigaMap |
-| Right when | The embedding is part of the entity's identity (e.g. you ingest pre-computed embeddings, you stream from a Kafka topic that includes vectors) | The embedding is computed by an external service (OpenAI, sentence-transformers running in another process), or it's expensive to compute and you don't want to redo it |
-| Memory profile under search load | Stable — vectors aren't duplicated | Slightly higher — `vectorStore` is paged in for the segments touched |
-| Update cost | Slightly degraded recall until next `optimize()` | Clean — `VectorEntry` swapped in `vectorStore`, graph updated normally |
+| Source of the vector | A field of the entity (`record Doc(String text, float[] embedding)`) | `vectorize()` derives it (embedding API, model) |
+| Cost of reproducing it | Cheap — read the field again | Expensive — one API / model call per entity |
+| In-memory index at start | Re-reads every vector from the entities (temporary vector file) | With `indexDirectory` / `indexLocation`: reloads the kept vector file, no vectorizer call. Without: re-vectorizes **every entity, blocking the map** |
+| On-disk index at start | Loads segments + vector file | Same |
+| `reindex()` | Re-reads from the entities | Vectorizes once, keeps the vectors on the heap during the rebuild |
+| Right when | The embedding is part of the entity's identity (pre-computed vectors ingested with the data) | The embedding is derived metadata from an external service |
 
-**Heuristic.** If your domain object would naturally carry the vector (a doc
-record with `text` and `embedding`), pick embedded. If the vector is "extra
-metadata bolted on by an external service", pick computed.
+**Heuristic.** If your domain object naturally carries the vector, pick
+embedded. If the vector is computed by a service, pick computed **and
+configure a directory or named location** — otherwise every start calls the
+service once per entity.
 
 ### Vectorizer contract
 
-`Vectorizer.vectorize()` **must be thread-safe** — multiple build / search
-threads call it concurrently on the same instance — and **must never return
-`null`** for an entity that's present (throws `IllegalStateException` at
-insert time). Override `vectorizeAll(List<E>)` to batch-vectorize against
-APIs that support it (e.g. OpenAI's `input: ["a", "b", "c"]` form) — the
-default loops one at a time.
+- `vectorize()` must **reproduce the committed vector** of a persisted
+  entity. The index re-vectorizes to repair its vector file after a crash
+  (chunks since the last checkpoint) or when the file is lost; a model that
+  drifts returns other vectors and the index takes them as they come.
+- `null` is an error (`IllegalStateException` at add / update / reindex)
+  unless `allowsNullVectors()` returns `true` — then `null` means "no
+  embedding": the entity stays in the map and its other indices, is excluded
+  from the vector index, and `getVector(id)` returns `null`. Transitions on
+  update: non-null → null removes, null → non-null adds.
+- It is called **concurrently** (searches by entity run alongside mutations).
+  A computed result is copied by the index before the next call, so a
+  reused buffer is allowed — but it must be **one per thread**
+  (`ThreadLocal`), never one shared array. An embedded vectorizer returns
+  the entity's own array, which is not copied.
+- Override `vectorizeAll(List<E>)` to batch against APIs that support it
+  (`input: ["a", "b", "c"]`). Same size, positional order; each element
+  must hold its own array when the list is returned.
+- Override `vectorKey(entity)` to return a cheap version key (record
+  version, id). An update whose key is unchanged skips `vectorize()`
+  entirely. Default `NO_KEY` compares vectors by content.
+- Change what a vector derives from only through the map (`update`,
+  `apply`, `set`, `replace`). A field mutated in place is not seen; the
+  index keeps serving the old vector until `reindex()` or a recovery.
+- The vectorizer instance is persisted with the index: keep configuration
+  (model name, URL) in fields, mark clients / model handles `transient` and
+  create them on first use.
 
 ## 2. Search API — overloads beyond `search(query, k)`
 
 ```java
-// Top-k similar to an existing entity ("more like this") — convenience overload
+// Top-k similar to an existing entity ("more like this")
 VectorSearchResult<Doc> similar = embeddings.search(someDoc, 10);
 
-// Override search-time beam width per query (latency vs recall)
-VectorSearchResult<Doc> highRecall = embeddings.search(queryVector, 10, 200);
+// Override the search-time beam width per query (latency vs recall)
+VectorSearchResult<Doc> highRecall = embeddings.search(queryVector, 10, 500);
 
-// Round-trip a stored vector by entity id
-float[] stored = embeddings.getVector(docs.add(new Doc(...)));
+// Round-trip a stored vector by entity id (copy from the vector file)
+float[] stored = embeddings.getVector(entityId);
 ```
+
+Every search uses `max(k, minSearchBeamWidth)` (default floor 100) unless
+the per-query overload says otherwise, so the top-k stays stable across `k`.
 
 ## 3. Design-time limits
 
-- **~2.1 billion vectors per index.** JVector uses `int` for graph node
-  ordinals. Shard across multiple `VectorIndex` instances if you exceed
-  it (see Sharding section below).
-- **Dimension is fixed at build.** Mixing 768-dim and 1024-dim throws on
-  `add`. Changing dimension means a new index name + rebuild.
-- **PQ compression silently sets `maxDegree=32`** (FusedPQ requirement).
-  Don't fight it — pick PQ or `maxDegree`, not both.
-- **`eventualIndexing=true` decouples vector-store writes from graph
+- **Java 25+.** `gigamap-jvector` is compiled with release 25.
+- **~2.1 billion vectors per GigaMap.** Graph ordinals are the GigaMap entity
+  ids cast to `int`; an id ≥ `Integer.MAX_VALUE` is rejected at add time.
+  Several vector indices on the *same* map share those ids, so sharding
+  means separate `GigaMap` instances (see §9).
+- **Dimension is fixed at build.** A vector of another length throws on
+  `add` (an index failure: the entity is kept, the index is stale until
+  `reindex()`). A new model means a new index name + re-index.
+- **Entity ids drive the ordinal space.** `PQ_IN_MEMORY` costs
+  `pqSubspaces` bytes per ordinal, deletion holes included.
+- **`eventualIndexing=true` decouples vector-file writes from graph
   mutations.** Search may miss recent adds until the queue drains; see
-  `vector-operations.md` for consistency-checkpoint semantics.
+  `vector-operations.md`.
 
 ## 4. Similarity function selection
 
 | Function | Best for | Notes |
 |---|---|---|
-| `COSINE` | Text/semantic embeddings (OpenAI, Cohere, BERT, sentence-transformers); image embeddings (CLIP); any direction-based representation | Default. Range [-1, 1]; 1 = identical direction. Most robust if you're unsure. |
-| `DOT_PRODUCT` | **Pre-normalized** vectors (you already divide by `‖v‖`); MIPS for recommendations | Same ranking as cosine on unit vectors, faster (skips the normalization step). |
-| `EUCLIDEAN` | Geographic / spatial data, image pixels, FaceNet face embeddings, k-means clustering | Magnitude matters. Range [0, +∞); 0 = identical. |
+| `COSINE` | Text/semantic embeddings (OpenAI, Cohere, BERT, sentence-transformers); image embeddings (CLIP); any direction-based representation | Default. Range [-1, 1]; 1 = identical direction. |
+| `DOT_PRODUCT` | **Pre-normalized** vectors (you already divide by `‖v‖`); MIPS for recommendations | Same ranking as cosine on unit vectors, skips the normalization. |
+| `EUCLIDEAN` | Geographic / spatial data, image pixels, FaceNet face embeddings, k-means clustering | Magnitude matters. Converted to a similarity internally. |
 
-If your model documentation doesn't say, default to `COSINE`.
+If your model documentation doesn't say, default to `COSINE`. The similarity
+function is not recorded in the graph files: changing it means a new index.
 
 ## 5. HNSW parameter tuning
 
@@ -79,42 +108,35 @@ Two numbers dominate: `maxDegree` (graph connectivity) and `beamWidth`
 recall ≈ f(maxDegree, beamWidth, search_beam_width)
 build_time ∝ beamWidth · maxDegree
 query_latency ∝ search_beam_width · log(N)
-memory ∝ maxDegree · N
+memory ∝ maxDegree · N           (+ pqSubspaces · maxDegree per node with FUSED_PQ)
 ```
 
 ### Starting points by dataset size
 
-| Size | `maxDegree` | `beamWidth` | Notes |
+| Size | `maxDegree` | `beamWidth` | Preset |
 |---|---|---|---|
-| < 10K | 8–16 | 50–100 | Lower values are sufficient. Use `forSmallDataset(dim)`. |
-| 10K – 1M | 16–32 | 100–200 | Balanced. Use `forMediumDataset(dim, ...)`. |
-| > 1M | 32–64 | 200–400 | Higher for better recall on a longer tail. Use `forLargeDataset(dim, dir)`. |
-| Maximum recall | 48–64 | 400–500 | Pay the build cost once; queries stay fast. Use `forHighPrecision(dim)`. |
+| < 10K | 8–16 | 50–100 | `forSmallDataset(dim)` → 12 / 75 |
+| 10K – 1M | 16–32 | 100–200 | `forMediumDataset(dim[, dir])` → 24 / 150 |
+| > 1M | 32–64 | 200–400 | `forLargeDataset(dim, dir)` → 32 / 300, on-disk, `FUSED_PQ` on |
+| Maximum recall | 48–64 | 400–500 | `forHighPrecision(dim[, dir])` → 56 / 450, exact scoring |
 
 > **Rule of thumb.** Start with a preset. Measure recall on a held-out
-> test set. Only change parameters when you have evidence — knob-twiddling
-> without measurement just makes the index bigger or slower.
+> test set. Only change parameters when you have evidence.
 
 ### Per-query beam width
 
-`search(query, k, searchBeamWidth)` lets you trade recall vs latency at
-query time. A common pattern is two tiers:
-
 ```java
-// Cheap: 95% recall is fine
-embeddings.search(q, 10, 50);
-
-// Expensive: precision matters (e.g., billing-relevant)
-embeddings.search(q, 10, 400);
+embeddings.search(q, 10, 50);    // cheap: lower recall acceptable
+embeddings.search(q, 10, 400);   // precision matters (billing-relevant)
 ```
 
-`minSearchBeamWidth` on the configuration sets a floor.
+`minSearchBeamWidth` on the configuration sets the floor (default 100; `1`
+makes the beam equal to `k`).
 
 ### `alpha` and `neighborOverflow`
 
-These tune the construction-time pruning. Defaults (`alpha=1.2`,
-`neighborOverflow=1.2`) are fine for most workloads. Move them only if
-you've validated against a benchmark.
+Construction-time pruning. Defaults (`1.2` / `1.2`) are fine for most
+workloads; move them only against a benchmark.
 
 ## 6. Search semantics with sub-queries
 
@@ -125,25 +147,18 @@ you've validated against a benchmark.
 2. A **`GigaMap.SubQuery`** — combinable with `GigaQuery` and
    `LuceneSearchResult`.
 
-When used as a `SubQuery`:
-
-- `gigaQuery.and(vectorResult)` → intersection by id set, **scores dropped**.
-  The result follows the `GigaQuery` order (which is unordered for bitmap
-  queries, so don't rely on order).
-- `vectorResult.and(gigaQuery)` → returns a `ScoredSearchResult` that
-  preserves vector ordering.
+- `gigaQuery.and(vectorResult)` → intersection by id set, **scores
+  dropped**; result order is the `GigaQuery` order (unordered for bitmap).
+- `vectorResult.and(gigaQuery)` → a `ScoredSearchResult` that preserves the
+  vector ordering.
 
 ```java
-// Drops scores, gives you a deterministic id set
-docs.query(category.is("tech")).and(embeddings.search(qv, 100));
-
-// Keeps scores, ranking by similarity
-embeddings.search(qv, 100).and(docs.query(category.is("tech")));
+docs.query(category.is("tech")).and(embeddings.search(qv, 100));   // id set
+embeddings.search(qv, 100).and(docs.query(category.is("tech")));   // ranked
 ```
 
-A typical RAG-style pattern: vector recall pulls a wide candidate pool,
-bitmap pre-filters narrow by domain, Lucene does keyword post-filtering,
-the final list is ranked by vector score:
+RAG-style: vector recall pulls a wide candidate pool, bitmap pre-filters by
+domain, Lucene post-filters by keyword, ranking stays by vector score:
 
 ```java
 ScoredSearchResult<Doc> ranked =
@@ -157,22 +172,27 @@ ScoredSearchResult<Doc> ranked =
 
 | Workload | Preset |
 |---|---|
-| Quick prototype, < 10K vectors, in-memory | `forSmallDataset(dim)` |
+| Prototype, < 10K vectors, in-memory | `forSmallDataset(dim)` |
 | Production, 10K–1M, in-memory | `forMediumDataset(dim)` |
 | Production, 10K–1M, durable across restart | `forMediumDataset(dim, indexDirectory)` |
-| Production, > 1M | `forLargeDataset(dim, indexDirectory)` |
-| Production, > 1M, RAM-constrained | `forLargeDataset(dim, dir, true)` (PQ) |
+| Production, > 1M, graph larger than the page cache | `forLargeDataset(dim, dir)` (`FUSED_PQ` on — larger files, fewer reads) |
+| Production, > 1M, graph fits the page cache | `forLargeDataset(dim, dir, false)` |
+| Production, > 1M, smallest files | `forCompactLargeDataset(dim, dir)` (`NVQ`, exact scoring, parallel writes) |
 | Recall-critical (legal, medical, billing) | `forHighPrecision(dim)` / `(dim, dir)` |
 
-Each has a `builderFor*(...)` variant — same defaults, returns a `Builder`
-so you can override one parameter and `.build()`:
+Each has a `builderFor*(...)` variant — same defaults, returns a `Builder`:
 
 ```java
 VectorIndexConfiguration cfg = VectorIndexConfiguration
     .builderForLargeDataset(768, Path.of("data/vectors"))
-    .similarityFunction(VectorSimilarityFunction.DOT_PRODUCT)  // override
+    .similarityFunction(VectorSimilarityFunction.DOT_PRODUCT)
+    .approximateScoring(ApproximateScoring.NONE)       // graph fits the page cache
     .build();
 ```
+
+A computed vectorizer with an in-memory preset (`forSmallDataset`,
+`forMediumDataset(dim)`) still needs `.indexDirectory(...)` or
+`.indexLocation(...)` via the builder twin, or it re-vectorizes at every start.
 
 ## 8. Recall measurement
 
@@ -180,45 +200,40 @@ Don't assume — measure. Recall is the fraction of true top-k neighbours
 your index returns; it depends on data distribution and parameters.
 
 ```java
-// Generate or load a held-out test set with known ground truth.
-// For each query, compare index search to a brute-force scan.
 double recallAtK(VectorIndex<Doc> idx, List<Query> tests, int k) {
     double sum = 0;
     for (Query q : tests) {
         Set<Long> indexHits = idx.search(q.vector(), k).stream()
             .map(e -> e.entityId()).collect(toSet());
-        Set<Long> truth = q.groundTruthTopK(k);
+        Set<Long> truth = q.groundTruthTopK(k);     // brute-force scan
         sum += (double) intersect(indexHits, truth).size() / k;
     }
     return sum / tests.size();
 }
 ```
 
-Aim for ≥ 0.95 recall@10 in production search. If you can't get there with
-the current preset, increase `beamWidth` first, then `maxDegree`, then
-`searchBeamWidth` per query.
+Aim for ≥ 0.95 recall@10 in production. If a preset falls short, raise the
+per-query `searchBeamWidth` / `minSearchBeamWidth` first (cheapest), then
+`beamWidth`, then `maxDegree`. With `FUSED_PQ`, a smaller `pqSubspaces`
+needs a wider beam to hold recall.
 
-For benchmark numbers on 10K × 128-dim clustered data, see the
-`gigamap-jvector` README — recall@10 ≈ 94.3% with default parameters,
-~10K QPS, p99 latency < 0.2 ms.
+Upstream benchmark (10K × 128-dim clustered data, `gigamap-jvector` README):
+recall@10 ≈ 94.3%, ~10K QPS, p99 latency < 0.2 ms.
 
 ## 9. Sharding past 2.1B
 
-Single-index ceiling: `Integer.MAX_VALUE` ordinals. Past that, shard:
+Ordinals are entity ids, so the ceiling is per **GigaMap**, not per index.
+Shard across maps:
 
 ```java
-// Route by entity id
 int shard = (int)(Math.abs(entity.id().hashCode()) % NUM_SHARDS);
-shards[shard].add(entity);
+shards[shard].map().add(entity);
 
-// Gather-and-merge for search
 List<VectorSearchResult<E>> all = Arrays.stream(shards)
     .map(s -> s.embeddings().search(query, k))
     .toList();
-// Merge top-k by score across shards
-List<Entry<E>> merged = mergeTopK(all, k);
+List<Entry<E>> merged = mergeTopK(all, k);     // by score across shards
 ```
 
-Either separate `VectorIndex` instances on the same `GigaMap`, or separate
-`GigaMap` instances per shard — the second scales better past several
-shards because GigaMap segment locks aren't shared.
+Separate maps also keep the segment locks and the ordinal-sized structures
+(`PQ_IN_MEMORY` codes) per shard.
