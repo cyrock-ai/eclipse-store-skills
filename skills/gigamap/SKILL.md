@@ -22,8 +22,9 @@ description: >
   "sub-query", "Lucene full-text search", "spatial index", "geo query",
   "near(lat, lon)", "withinBox", "SpatialIndexer", "DocumentPopulator",
   "IndexerString", "IndexerLocalDate", "BinaryIndexerUUID", "IndexerMultiValue",
-  "gigaMap.store", "billions of rows", or asks why `storageManager.store(gigaMap)`
-  is unsafe.
+  "gigaMap.store", "reindex", "stale index", "@Index", "@FullText",
+  "IndexerGenerator", "register an index later", "billions of rows", or asks
+  why `storageManager.store(gigaMap)` is unsafe.
 
   **Vector / embedding triggers (apply at design time too).** Apply when the
   user is designing or building anything involving embeddings or similarity:
@@ -31,18 +32,21 @@ description: >
   index" / "vector store" / "vector database", "jvector", "VectorIndex",
   "VectorIndices", "VectorIndexConfiguration", "Vectorizer",
   "VectorSearchResult", "COSINE / DOT_PRODUCT / EUCLIDEAN", "PQ compression",
-  "on-disk vector index", "eventual indexing", "embedded vs computed vectors".
+  "NVQ", "ApproximateScoring", "on-disk vector index", "vector file",
+  "eventual indexing", "embedded vs computed vectors", "allowsNullVectors",
+  "@Vector", "IndexLocation", "named index location", "IndexLocations.bind".
   Eclipse Store ships an HNSW vector index via the `gigamap-jvector` artifact
-  that integrates with bitmap / Lucene via sub-queries.
-version: 0.4.1
+  (Java 25+) that integrates with bitmap / Lucene via sub-queries.
+version: 0.6.0
 ---
 
 # Eclipse Store — GigaMap (Indexed, Queryable, Lazy Large Collections)
 
 Segmented, index-backed, lazily-loaded collection. Multiple index types
 (bitmap, identity, unique, spatial, Lucene, vector), composable via
-sub-queries. Mutations must go through `add`/`remove`/`update`/`apply` —
-direct entity mutation leaves indices stale.
+sub-queries. Mutations must go through `add`/`remove`/`update`/`apply`/
+`set`/`replace` — direct entity mutation leaves indices stale. Verified
+against Eclipse Store 4.3.0.
 
 ## Do NOT use this skill
 
@@ -57,9 +61,10 @@ All under `groupId=org.eclipse.store`, `version=${eclipse-store.version}`:
 
 | `artifactId` | Required for |
 |---|---|
-| `gigamap` | Core + bitmap + spatial. |
-| `gigamap-lucene` | Full-text. |
-| `gigamap-jvector` | HNSW vector similarity. |
+| `gigamap` | Core + bitmap + spatial + annotations + `IndexLocation`. Java 17+. |
+| `gigamap-lucene` | Full-text. Add `lucene-core` + `lucene-queryparser` 9.8.0 yourself (they are `provided`). |
+| `gigamap-jvector` | HNSW vector similarity. **Java 25+** (compiled with release 25). |
+| `gigamap-codegen` | Optional annotation processor: compile-time `Entity_` metamodel. |
 
 ## Core API
 
@@ -68,85 +73,92 @@ From `org.eclipse.store.gigamap.types`:
 | Symbol | Purpose |
 |---|---|
 | `GigaMap<E>` | The collection. |
-| `GigaMap.New()` | No-index map, identity equality. |
-| `GigaMap.New(Equalator<? super E>)` | No-index map with custom equality. |
+| `GigaMap.New()` / `GigaMap.New(Equalator<? super E>)` | No-index map, identity / custom equality. |
 | `GigaMap.<E>Builder()` | Fluent builder for indexed map. |
-| `.withBitmapIdentityIndex(indexer)` | Identity index (unique id, fastest lookup). |
+| `.withBitmapIdentityIndex(indexer)` | Identity index (how entities are looked up for `remove` / `update`). Not a uniqueness guarantee. |
 | `.withBitmapUniqueIndex(indexer)` | Uniqueness constraint. |
 | `.withBitmapIndex(indexer)` | Non-unique bitmap index (also used for `SpatialIndexer`). |
+| `.withCustomConstraint(constraint)` | Custom validation (named class — it is persisted with the map). |
 | `.withIdentityEquality()` / `.withValueEquality()` | Equality mode for the indexed map (default: identity). |
 | `.build()` | Create the map. |
+| `map.index().bitmap().add(indexer)` / `.ensure(indexer)` / `.update(indexer)` / `.removeIndex(name)` | Register / replace / drop a bitmap index **after** build, also on a populated map (back-filled, all-or-nothing). |
 | `map.index().register(LuceneIndex.Category(ctx))` | Attach a Lucene full-text index post-build. |
-| `map.index().register(VectorIndices.Category())` then `vectorIndices.add(name, cfg, vectorizer)` | Attach a jvector similarity index. |
-| `map.add(e)` / `map.remove(e)` / `map.update(e, mutator)` / `map.apply(e, fn)` | The only safe entry points for mutation. |
-| `map.store()` | Persist (acquires GigaMap's internal lock). Never use `storageManager.store(map)` directly. |
-| `GigaQuery<E>` | Fluent query — `.toList()`, `.count()`, `.iterator()` (try-with-resources). |
-| `GigaMap.SubQuery` | Abstraction for things that contribute id sets to a query. |
+| `map.index().register(VectorIndices.Category())` then `vectorIndices.ensure(name, cfg, vectorizer)` | Attach a jvector similarity index. |
+| `map.add(e)` / `map.remove(e)` / `map.update(e, mutator)` / `map.apply(e, fn)` | The only safe entry points for in-place mutation. |
+| `map.set(entityId, replacement)` / `map.replace(current, replacement)` / `map.removeById(id)` | Install a *different* instance (records, immutable entities) / index-free removal. |
+| `map.reindex()` | Rebuild every index from the current entity state (after a direct mutation or class evolution of an indexed field). |
+| `map.store()` | Persist (acquires GigaMap's internal lock). Never use `storageManager.store(map)` directly. `map.store(storer)` registers into a `Storer` for a multi-map atomic commit. |
+| `GigaQuery<E>` | Fluent query — `.toList()`, `.toList(offset, limit)`, `.count()`, `.findFirst()`, `.iterator()` (try-with-resources). No `skip` / `limit`. |
 
-Indexer base classes (in `org.eclipse.store.gigamap.types`) and the
-abstract method each one demands:
+Indexer base classes and the method each one demands — every single-value
+getter is `protected abstract` (overriding it as `public` compiles):
 
 | Indexer | For type | Override |
 |---|---|---|
-| `IndexerString.Abstract<E>` | `String` | `public String getString(E)` |
-| `BinaryIndexerUUID.Abstract<E>` | `UUID` | `protected UUID getUUID(E)` |
-| `IndexerLocalDate.Abstract<E>` | `LocalDate` | `protected LocalDate getLocalDate(E)` |
-| `IndexerLocalDateTime.Abstract<E>` | `LocalDateTime` | `protected LocalDateTime getLocalDateTime(E)` |
-| `IndexerInteger.Abstract<E>` | `Integer` | `protected Integer getInteger(E)` |
-| `IndexerLong.Abstract<E>` | `Long` | `protected Long getLong(E)` |
-| `IndexerByte.Abstract<E>` | `Byte` | `protected Byte getByte(E)` |
-| `IndexerFloat.Abstract<E>` | `Float` | `protected Float getFloat(E)` |
-| `IndexerDouble.Abstract<E>` | `Double` | `protected Double getDouble(E)` |
-| `IndexerBoolean.Abstract<E>` | `Boolean` | `protected Boolean getBoolean(E)` |
-| `IndexerMultiValue.Abstract<E, K>` | `Collection<K>` | `public Iterable<K> indexEntityMultiValue(E)` + `public Class<K> keyType()` |
+| `IndexerString.Abstract<E>` | `String` | `protected String getString(E)` |
+| `BinaryIndexerUUID.Abstract<E>` | `UUID` (high cardinality) | `protected UUID getUUID(E)` |
+| `IndexerLocalDate` / `IndexerLocalDateTime` / `IndexerInstant` `.Abstract<E>` | `java.time` | `protected LocalDate getLocalDate(E)` etc. |
+| `IndexerInteger` / `IndexerLong` / `IndexerDouble` / `IndexerFloat` / `IndexerByte` / `IndexerBoolean` `.Abstract<E>` | wrappers, low cardinality | `protected Integer getInteger(E)` etc. |
+| `ByteIndexerInteger` / `ByteIndexerLong` / … `.Abstract<E>` | high-cardinality numerics **with** range queries | `protected Integer getInteger(E)` etc. |
+| `IndexerMultiValue.Abstract<E, K>` | `Iterable<K>` | `public Iterable<? extends K> indexEntityMultiValue(E)` + `public Class<K> keyType()` |
 
-Annotations (for simple cases):
+Annotations — `@Index` (`kind = LOW_CARDINALITY / BINARY / BIT_SLICED`),
+`@Identity`, `@Unique`, class-level `@SpatialIndex(latitude=…, longitude=…)`,
+`@FullText` (`gigamap-lucene`), `@Vector(dimension = …)` (`gigamap-jvector`) on
+fields or no-arg getters. They are generated at runtime by `IndexerGenerator`,
+**not** discovered by the `Builder`:
 
-| Annotation | Effect |
-|---|---|
-| `@Index` | Declare an implicit index on a field. |
-| `@Identity` | Identity index (single unique id field). |
-| `@Unique` | Uniqueness constraint. |
+```java
+GeneratedIndices<Person> idx = IndexerGenerator.AnnotationBased(Person.class)
+    .register(LuceneAnnotationHandler.New())     // only if @FullText is used
+    .register(VectorAnnotationHandler.New())     // only if @Vector is used
+    .generateIndices(map);                       // idempotent, back-fills a populated map
+map.query(idx.getIndexerString("lastName").is("Smith"));
+```
+
+With the `gigamap-codegen` annotation processor the same annotations yield
+a compile-time `Person_` class: `Person_.registerIndices(map)` and typed
+constants `Person_.lastName`.
 
 ## Index types in depth
 
 ### Bitmap — exact + range, the default
 
 Off-heap bit sets keyed by entity value; equality, `in`-list, range, and
-predicate queries on scalar or collection-valued fields. Three registration
-variants:
+predicate queries on scalar or collection-valued fields.
 
 | Builder method | Semantics |
 |---|---|
-| `.withBitmapIdentityIndex(indexer)` | Unique **and** used internally for `remove` / `update` lookup. |
+| `.withBitmapIdentityIndex(indexer)` | Used internally for `remove` / `update` lookup. **Not** unique — add `.withBitmapUniqueIndex` for that. |
 | `.withBitmapUniqueIndex(indexer)` | Uniqueness constraint. Duplicate → `UniqueConstraintViolationException`. |
 | `.withBitmapIndex(indexer)` | Non-unique; many entities per key. Also the path for `SpatialIndexer`. |
 
-Operator catalogue (`is`, `in`, `not`, `notIn`, `is(Predicate)`, range and
-temporal operators, multi-value `.all`) → `references/query-dsl.md`.
+High-cardinality keys (ids, UUIDs): `BinaryIndexer*` (equality only) or
+`ByteIndexer*` (numerics with range queries). Operator catalogue → `references/query-dsl.md`.
 
 ### Lucene — full-text search with scoring
 
-Separate artifact (`gigamap-lucene`). Use when you need analyzer-driven
-tokenization, phrase, wildcard, fuzzy, or score-ranked results — anything
-beyond exact/range on a string. Wire post-build with the restart-safe
-get-or-register idiom (after deserialization the category is already
-attached, so `register(...)` would return `null`):
+Separate artifact (`gigamap-lucene`). Use for analyzer-driven tokenization,
+phrase, wildcard, fuzzy, or score-ranked results. Wire post-build with the
+restart-safe get-or-register idiom (after deserialization the category is
+already attached, so `register(...)` would return `null`):
 
 ```java
 LuceneIndex<E> lucene = map.index().get(LuceneIndex.class);
 if (lucene == null) lucene = map.index().register(LuceneIndex.Category(ctx));
 ```
 
-`ctx` is a `LuceneContext` bound to a `DocumentPopulator<E>` and an
-on-disk directory. `lucene.query(q)` returns `List<E>`; `lucene.search(q, k)`
-returns a `LuceneSearchResult<E>` that's sub-queryable via `.and(...)`
-(Pattern H). **`LuceneIndex` is `Closeable`** and holds an on-disk
-write lock that `storageManager.close()` does **not** cascade — call
-`luceneIndex.close()` before reopening storage in the same JVM. The
-Lucene directory is owned by Lucene — back it up **separately** from
-EclipseStore's `storage/`. Detail (provided Maven deps, query syntax,
-score handling) in `references/lucene.md`.
+`ctx` is a `LuceneContext` bound to a `DocumentPopulator<E>`:
+`LuceneContext.New(populator)` keeps the index data **inside the object
+graph** (persisted with the map); `LuceneContext.New(path, populator)` uses an
+MMap directory; `LuceneContext.New(DirectoryCreator.MMap(IndexLocation.Named("fulltext")), populator)`
+binds the directory at runtime (`references/index-locations.md`).
+`lucene.query(q)` returns `List<E>`; `lucene.search(q, k)` returns a
+`LuceneSearchResult<E>` that's sub-queryable via `.and(...)` (Pattern H).
+**Storage shutdown closes every index of a loaded map** — no explicit
+`close()` before `storage.shutdown()`. Back up an MMap directory **together
+with** the storage directory. Detail (Maven deps, query syntax, commits,
+repair) in `references/lucene.md`.
 
 ### Spatial — latitude / longitude, part of core
 
@@ -159,62 +171,37 @@ public class LocationIndex extends SpatialIndexer.Abstract<Store> {
     @Override protected Double getLatitude (Store s) { return s.lat(); }
     @Override protected Double getLongitude(Store s) { return s.lon(); }
 }
-
 private static final LocationIndex loc = new LocationIndex();
-
-GigaMap<Store> stores = GigaMap.<Store>Builder()
-    .withBitmapIdentityIndex(StoreIndices.id)
-    .withBitmapIndex(loc)
-    .build();
 ```
 
-Operators on the indexer:
-
-| Operator | Kind | Meaning |
-|---|---|---|
-| `loc.at(lat, lon)` | `Condition` | Exact coordinate match. |
-| `loc.near(lat, lon, radiusKm)` | `Condition` | **Bounding-box approximation** of the circle. Fast, index-driven, includes corner points beyond the true radius (up to √2 × `radiusKm`). Computed with Earth-radius / `cos(lat)` longitude correction. |
-| `loc.withinBox(minLat, maxLat, minLon, maxLon)` | `Condition` | Axis-aligned bounding box. |
-| `loc.latitudeBetween(min, max)` / `longitudeBetween(min, max)` | `Condition` | 1-D range. |
-| `loc.latitudeAbove(v)` / `latitudeBelow(v)` | `Condition` | 1-D bound (likewise longitude). |
-| `loc.isNull()` | `Condition` | Entities with missing coordinates. |
-| `loc.withinRadius(lat, lon, radiusKm)` | `Predicate<E>` | **Exact** great-circle (haversine) filter. Not index-driven — applies per entity. Chain after `near` for index-accelerated exact results. |
-| `SpatialIndexer.haversineDistance(lat1, lon1, lat2, lon2)` | static `double` | Great-circle distance in km. Public helper. |
-
-Exact-radius idiom — `near` as the index pre-filter, `withinRadius` as the
-exact post-filter:
-
-```java
-var exact = loc.withinRadius(40.7128, -74.0060, 50.0);
-List<Store> hits = map.query(loc.near(40.7128, -74.0060, 50.0))
-    .stream()
-    .filter(exact)
-    .toList();
-```
-
-Lat/lon getters return `Double` (nullable — `isNull()` matches missing
-coordinates). Points only — no polygon / linestring geometry. For
-cutoff-sensitive queries (billing zones, legal radii) the `withinRadius`
-post-filter is mandatory; for approximate queries it's optional.
+Index-driven `Condition`s: `at`, `near(lat, lon, radiusKm)` (**bounding
+box**, corners up to √2 × radius), `withinBox`, `latitudeBetween` /
+`longitudeBetween`, `latitudeAbove` / `Below`, `isNull`. Exact circle:
+post-filter with the `Predicate` `loc.withinRadius(lat, lon, radiusKm)`
+after a `near` pre-select; `SpatialIndexer.haversineDistance(...)` is the
+public km helper. Points only. Full table → `references/query-dsl.md`.
 
 ### Vector — HNSW similarity search via jvector
 
-Separate artifact (`gigamap-jvector`). Eclipse Store wraps
-[JVector](https://github.com/datastax/jvector) (an HNSW kNN library) so a
-`GigaMap<E>` becomes a vector-searchable map: named vector indices,
-automatic mutation broadcast, lazily-resolved search results, sub-queryable
-with bitmap and Lucene (Pattern H).
+Separate artifact (`gigamap-jvector`), **Java 25+**. Wraps
+[JVector](https://github.com/datastax/jvector) (HNSW kNN): named vector
+indices, automatic mutation broadcast, lazy results, sub-queryable with
+bitmap and Lucene (Pattern H).
 
-> **JVM flag.** Add `--add-modules jdk.incubator.vector` for SIMD
-> acceleration via the Panama Vector API. Java 21 LTS recommended.
+> **JVM flags.** `--add-modules jdk.incubator.vector` (SIMD scoring, scalar
+> fallback without it) and `--enable-native-access=ALL-UNNAMED` (jvector's
+> memory-mapped graph reader). Put both in the launcher and in Surefire's
+> `<argLine>`.
 
-`Vectorizer<E>.isEmbedded()` decides where vectors live: **embedded** =
-read from the entity (`record Doc(String text, float[] embedding)`),
-**computed** (default) = computed once at `add` and persisted in an
-internal `GigaMap<VectorEntry>`. Mode is fixed at build — switching means
-rebuilding from scratch. Pick **embedded** when the entity already carries
-the vector; **computed** when the source is expensive (OpenAI, image
-embedder).
+**The storage holds no vectors.** Each index keeps them in a memory-mapped
+*vector file* (`<name>.vec`), a cache the index rebuilds by calling the
+vectorizer again — so `vectorize()` must reproduce the committed vector of
+a persisted entity. `Vectorizer<E>.isEmbedded()` says where it comes from:
+**embedded** = a field of the entity, **computed** (default) = derived by the
+vectorizer (embedding API). A computed index needs `indexDirectory(...)` /
+`indexLocation(...)` to keep its vector file across restarts; without one it
+re-vectorizes **every entity at every start, blocking the map**. Mode is
+fixed at build.
 
 ```java
 public class DocVectorizer extends Vectorizer<Doc> {
@@ -223,15 +210,12 @@ public class DocVectorizer extends Vectorizer<Doc> {
 }
 
 GigaMap<Doc> docs = GigaMap.New();
-
-VectorIndexConfiguration cfg = VectorIndexConfiguration
-    .forMediumDataset(768);                          // (1)
+VectorIndexConfiguration cfg = VectorIndexConfiguration.forMediumDataset(768);   // (1)
 
 // Restart-safe — after deserialization the category is already attached,
 // so register(...) would return null.
 VectorIndices<Doc> indices = docs.index().get(VectorIndices.class);
 if (indices == null) indices = docs.index().register(VectorIndices.Category());
-
 VectorIndex<Doc> embeddings = indices.ensure("embeddings", cfg, new DocVectorizer());  // (2)
 
 docs.add(new Doc("Hello world", vec));
@@ -242,18 +226,18 @@ for (var entry : top) {
 }
 ```
 
-(1) `forSmallDataset` / `forMediumDataset` / `forLargeDataset` /
-`forHighPrecision` factory presets cover most cases. Each has a
-`builderFor*(...)` variant if you need to override one parameter.
-(2) `ensure(name, cfg, vectorizer)` is the restart-safe sibling of `add(...)`
-— returns the existing named index on the second run.
+(1) Presets `forSmallDataset` / `forMediumDataset` / `forLargeDataset` /
+`forCompactLargeDataset` / `forHighPrecision`, each with a `builderFor*`
+twin to override one parameter (e.g. `.indexDirectory(path)` for a computed
+vectorizer). (2) `ensure` is the restart-safe sibling of `add` — on the
+second run it returns the existing index **unchanged** (a changed `cfg` is
+ignored; reconfigure via `removeIndex` + `add`).
 
-**`VectorIndex` is `Closeable`** (on-disk graph holds file handles). Close
-it before `storage.close()` if you'll reopen storage in the same JVM.
-Design-side detail (mode, similarity, HNSW tuning, sub-query semantics,
-sharding, recall measurement) → `references/vector-deep-dive.md`.
-Operations (full parameter table, restart-safe wiring, on-disk format, PQ,
-background tasks, operational checklist) → `references/vector-operations.md`.
+`null` vectors throw unless the vectorizer opts in with `allowsNullVectors()`
+(entity stays in the map, excluded from the index). **Storage shutdown closes
+every vector index of a loaded map** — no explicit `close()`. Design-side
+detail → `references/vector-deep-dive.md`; operations (parameters, files on
+disk, NVQ / PQ, background tasks, 4.x upgrade) → `references/vector-operations.md`.
 
 ## Idiomatic patterns
 
@@ -265,7 +249,7 @@ public final class PersonIndices {
         @Override protected UUID getUUID(Person p) { return p.id(); }       // (1)
     };
     public static final IndexerString<Person> lastName = new IndexerString.Abstract<>() {
-        @Override public String getString(Person p) { return p.lastName(); } // (2)
+        @Override protected String getString(Person p) { return p.lastName(); } // (2)
     };
     public static final IndexerLocalDate<Person> birthDate = new IndexerLocalDate.Abstract<>() {
         @Override protected LocalDate getLocalDate(Person p) { return p.birthDate(); }
@@ -279,10 +263,11 @@ public final class PersonIndices {
 }
 ```
 
-Match the abstract base's visibility — see the **Override** column in the
-Indexer base classes table above. `getString` is `public`; numeric /
-temporal / UUID getters are `protected`; `IndexerMultiValue` overrides two
-`public` methods.
+(1) `BinaryIndexerUUID` is the high-cardinality variant for ids. (2) All
+single-value getters are `protected`. (3) `IndexerMultiValue` overrides two
+`public` methods. The persisted index name defaults to
+`{outer class FQCN}.{field}` — override `name()` to decouple it from the
+Java identifier before refactoring.
 
 ### Pattern B — Build a GigaMap
 
@@ -294,23 +279,29 @@ GigaMap<Person> map = GigaMap.<Person>Builder()
     .build();
 ```
 
+Indices can also be registered later, on a populated map — the back-fill
+runs the indexer over every entity, all-or-nothing:
+
+```java
+map.index().bitmap().ensure(PersonIndices.tags);     // get-or-create, restart-safe
+map.index().bitmap().update(PersonIndices.lastName); // same name, new logic
+```
+
 ### Pattern C — Add, query, store
 
 ```java
 map.add(new Person(UUID.randomUUID(), "Alice", "Smith", LocalDate.of(1990, 1, 1)));
 map.add(new Person(UUID.randomUUID(), "Bob", "Smith", LocalDate.of(1985, 6, 15)));
 
-// Simple equality
 List<Person> smiths = map.query(PersonIndices.lastName.is("Smith")).toList();
 
-// Combined
 GigaQuery<Person> adults = map.query(
     PersonIndices.birthDate.before(LocalDate.of(2005, 1, 1))
       .and(PersonIndices.lastName.is("Smith"))
 );
 long n = adults.count();
+List<Person> page = adults.toList(200, 100);   // offset, limit
 
-// Persist
 map.store();
 ```
 
@@ -335,21 +326,22 @@ String oldEmail = map.apply(person, p -> {
 });
 ```
 
+Both also exist as `update(entityId, …)` / `apply(entityId, …)` for maps
+without a bitmap index (Lucene-only, vector-only); the id comes from
+`iterateIndexed` or a scored result's `entityId()`.
+
 **Records / immutable entities.** `update` / `apply` rely on in-place
-mutation, so they don't fit immutable types. With a record, do `map.remove(old);
-map.add(newInstance);` — combine with `.withValueEquality()` on the builder
-if the new instance is value-equal to the old one (else use identity / pass
-the same record reference to `remove`).
+mutation. Use `map.replace(old, newInstance)` or `map.set(entityId, newInstance)`
+instead: the new instance is indexed in place of the old one. Passing the
+instance the map already holds throws `IllegalArgumentException` — `set` /
+`replace` are not a way to write back an entity you mutated yourself.
 
 ### Pattern E — Remove
 
 ```java
-// By identity (uses identity index if present)
-map.remove(person);
-
-// By explicit index (faster if you know which)
-map.remove(person, PersonIndices.lastName);
-
+map.remove(person);                          // identity index if present
+map.remove(person, PersonIndices.lastName);  // explicit index
+map.removeById(entityId);                    // no bitmap index needed
 map.store();
 ```
 
@@ -365,7 +357,9 @@ try (var it = map.query(PersonIndices.lastName.is("Smith")).iterator()) {
 }
 ```
 
-Deadlock follows silently if you forget.
+If you forget: a mutation from the thread that still holds the open iterator
+throws `IllegalStateException` ("Self-deadlock detected"); writers on other
+threads wait until the iterator is closed — potentially forever.
 
 ### Pattern G — Query DSL (boolean / range / predicate / multi-value)
 
@@ -375,10 +369,12 @@ map.query(lastName.is("Smith").and(birthDate.isYear(1990)));
 map.query(lastName.is("Smith").or(lastName.is("Jones")));
 map.query(lastName.in("Smith", "Jones", "Brown"));
 map.query(lastName.not("Smith"));
+map.query(lastName.startsWith("Sm"));
 
 // Range (numeric + temporal indexers)
 map.query(price.between(10, 100));
 map.query(birthDate.before(LocalDate.now().minusYears(18)));
+map.query(birthDate.isMonth(6));          // int, not java.time.Month
 
 // Predicate on the index key
 map.query(lastName.is(n -> n.length() > 5));
@@ -389,8 +385,8 @@ map.query(interests.all(Interest.SPORTS, Interest.LITERATURE)); // contains both
 ```
 
 Full operator catalogue (`greaterThan`, `lessThanEqual`, `isYear`, `isMonth`,
-`after`, `before`, `notIn`, multi-value `.in`/`.not`/`.notIn`, …) lives in
-`references/query-dsl.md`.
+`after`, `before`, `notIn`, `contains`, multi-value `.in`/`.not`/`.notIn`, …)
+lives in `references/query-dsl.md`.
 
 ### Pattern H — Sub-queries (combine across index types)
 
@@ -426,6 +422,7 @@ public class AppRoot {
     public GigaMap<Person> people() { return people; }
 }
 
+IndexLocations.bind("vectors", dir);          // only with IndexLocation.Named, before start
 EmbeddedStorageManager storage = EmbeddedStorage.start(new AppRoot(), dir);
 ```
 
@@ -440,9 +437,11 @@ map.store();
 ```
 
 Indices still point to "Smith". Queries return stale results; `map.remove(person,
-lastNameIndex)` looks in the wrong bucket.
+lastNameIndex)` looks in the wrong bucket. A later `update` does **not** undo
+it (the previous keys are gone).
 
-**Fix.** `map.update(person, p -> p.setLastName("Jones"))`.
+**Fix.** `map.update(person, p -> p.setLastName("Jones"))`. If the direct
+mutation already happened: `storageManager.store(person); map.reindex(); map.store();`.
 
 ### Anti-pattern 2 — No identity index
 
@@ -462,16 +461,17 @@ map.remove(somePerson);     // falls back to compound index — slow
 storageManager.store(map);
 ```
 
-**Fix.** `map.store()`. It acquires GigaMap's internal lock.
-
-If you must go through storage manager (e.g., in a multi-object atomic store),
-synchronize externally:
+**Fix.** `map.store()`. It acquires GigaMap's internal lock. For one commit
+spanning several maps and the root, register through the map into a
+`Storer` and commit once:
 
 ```java
-synchronized (map) {
-    storageManager.store(map);
-}
+Storer storer = storageManager.createStorer();
+mapA.store(storer); mapB.store(storer); storer.store(root);
+storer.commit();
 ```
+
+If you must go through storage manager: `synchronized (map) { storageManager.store(map); }`.
 
 ### Anti-pattern 4 — Leaving iterators / streams open
 
@@ -481,11 +481,7 @@ Iterator<Person> it = map.query(...).iterator();
 process(it.next());   // iterator never closed → read lock never released
 ```
 
-**Fix.** Try-with-resources:
-
-```java
-try (var it = map.query(...).iterator()) { ... }
-```
+**Fix.** Try-with-resources: `try (var it = map.query(...).iterator()) { ... }`.
 
 ### Anti-pattern 5 — Ignoring `UniqueConstraintViolationException`
 
@@ -493,20 +489,42 @@ Adding two entities that collide on a unique index throws
 `UniqueConstraintViolationException`. Catching and swallowing breaks the
 GigaMap's invariants. Handle the duplicate at the domain level.
 
+### Anti-pattern 6 — Computed vectorizer without a directory
+
+```java
+// WRONG — every start calls the embedding API once per entity, under the map's lock
+indices.ensure("embeddings", VectorIndexConfiguration.forMediumDataset(768), new OpenAIVectorizer());
+```
+
+**Fix.** `builderForMediumDataset(768).indexDirectory(Path.of("data/vectors")).build()`
+(or `.indexLocation(IndexLocation.Named("vectors"))`) so the vector file is kept.
+
 ## Pitfalls & gotchas
 
-1. **Indices must be declared up front.** Adding an index later means a data
-   migration — you cannot register a new indexer without re-scanning.
+1. **Direct mutations and evolved indexed fields need `reindex()`.** Indices
+   are a derived cache restored verbatim from storage. A field written
+   without `update` / `apply`, or renamed / retyped between releases without
+   a value-preserving legacy mapping, leaves them stale (`StaleIndexException`
+   on the next update). Store the entities, call `reindex()`, then `store()`.
 2. **`gigaMap.store()`'s lock covers GigaMap operations only.** Stored
    *elements* can still be mutated by another thread during the store — the
    GigaMap stays consistent but the persisted element graph may not.
-   Cross-aggregate atomicity (GigaMap mutation + other graph changes) needs
-   an application-level lock spanning both. See `concurrency-and-locking`.
+   Cross-aggregate atomicity needs an application-level lock spanning both.
+   See `concurrency-and-locking`.
 3. **Null forbidden.** `map.add(null)` throws. Use sentinels for "absent".
-4. **Query results are views.** Lazy iteration; don't assume stability
-   across mutation.
-5. **Sub-queries must come from the same GigaMap.** Combining queries across
+4. **No structural modification during iteration.** Calling `add` / `remove` /
+   `update` / `apply` from inside `forEach` / `iterate` / a query consumer
+   throws `IllegalStateException`. Collect matches first, mutate after the
+   iteration. `store()` during iteration is allowed.
+5. **Constraint violations in `update` / `apply` remove the entity.** The
+   in-place mutation cannot be rolled back, so the map drops the entry and
+   throws `ConstraintViolationException` (carrying the entity). Index
+   failures (indexer throws, wrong vector dimension) keep the entity.
+6. **Sub-queries must come from the same GigaMap.** Combining queries across
    maps is invalid.
+7. **`ensure(...)` never reconfigures.** `bitmap().ensure(indexer)` and
+   `vectorIndices.ensure(name, cfg, vectorizer)` return the existing index
+   unchanged; use `bitmap().update(indexer)` / `removeIndex` + `add`.
 
 ## Symptom → fix
 
@@ -514,61 +532,69 @@ GigaMap's invariants. Handle the duplicate at the domain level.
 |---|---|---|
 | `BinaryPersistenceException: Inconsistent element count` | `storageManager.store(map)` ran concurrently with a mutation. | `map.store()` (acquires internal lock). |
 | `UniqueConstraintViolationException` | Duplicate on a `.withBitmapUniqueIndex(...)` field. | Handle the duplicate at the domain level; do not swallow. |
-| Queries return stale data after a setter call. | Direct field mutation bypassed the indices. | `map.update(e, mutator)` / `map.apply(e, fn)`. |
-| Reader threads deadlock under load. | A query iterator wasn't closed → read lock held. | Try-with-resources on every iterator. |
+| `UniqueConstraintViolationExceptionBitmap` from `reindex()` | Two entities share a unique key (typically after class evolution). | Re-distinguish the colliding entities via `update`, call `reindex()` again. |
+| Queries return stale data after a setter call. | Direct field mutation bypassed the indices. | `map.update(e, mutator)` / `map.apply(e, fn)`; already happened → `reindex()`. |
+| `StaleIndexException` on `update` / `set` | Index keys predate a direct mutation or class evolution. | `map.reindex(); map.store();` |
+| `IllegalArgumentException` from `set(id, entity)` / `replace(e, e)` | Passed the instance the map already holds. | `update` / `apply` for in-place changes; `set` / `replace` take a *new* instance. |
+| Writers block / time out under load. | A query iterator wasn't closed → read lock held. | Try-with-resources on every iterator. |
+| `IllegalStateException: Self-deadlock detected...` | Mutation on the thread that still holds an open iterator. | Close the iterator (try-with-resources) before mutating. |
+| `IllegalStateException: ...must not be structurally modified during iteration.` | `add` / `remove` / `update` called inside `forEach` / `iterate` / a query consumer. | Collect first, mutate after the iteration. |
 | Removes / updates are slow on a large map. | No identity index — falls back to compound search. | Add `.withBitmapIdentityIndex(idIndexer)` to the builder. |
 | `map.index().register(Category())` returned `null`. | Category already attached (post-deserialization run). | Guard: `var i = map.index().get(SomeIndices.class); if (i == null) i = map.index().register(SomeIndices.Category(...));` |
-| `LockObtainFailedException: Lock held by this virtual machine` on second `EmbeddedStorage.start(...)`. | `LuceneIndex` / `VectorIndex` weren't closed before `storage.close()`; the on-disk `write.lock` survives in the same JVM. | Close them explicitly before storage close: `luceneIndex.close(); vectorIndex.close(); storage.close();` |
+| `IllegalStateException: indexDirectory or indexLocation is required when onDisk is true` | On-disk vector config without a directory. | `.indexDirectory(path)` or `.indexLocation(IndexLocation.Named(...))`. |
+| Startup fails naming an index and an unbound location name. | `IndexLocation.Named` used without `IndexLocations.bind`. | Bind the name before `EmbeddedStorage.start(...)`. |
+| Every start calls the embedding service once per entity / start blocks on a vector index. | In-memory computed vector index without a directory → temporary vector file. | Configure `indexDirectory` / `indexLocation`. |
+| `IllegalStateException: Vectorizer returned null` | Entity without an embedding. | Opt in with `allowsNullVectors()` or don't add it. |
+| `LockObtainFailedException: Lock held by this virtual machine` | Two storages / maps in one JVM share a Lucene directory (shutdown already closes indices). | One directory per index; distinct `IndexLocation.Named` names per storage. |
 
 ## Interactions with other skills
 
 - **`lazy-loading`** — Do **not** wrap GigaMap in `Lazy<>`; it handles its own
   segment loading.
-- **`storing-data`** — Use `gigaMap.store()`, not `storageManager.store(map)`.
+- **`storing-data`** — Use `gigaMap.store()`, not `storageManager.store(map)`;
+  `gigaMap.store(storer)` for a multi-object atomic commit.
 - **`concurrency-and-locking`** — GigaMap's internal RW lock makes single
   operations atomic; cross-aggregate atomicity still needs an
   application-level lock.
 - **`root-and-object-graph`** — GigaMap lives as a root-level field.
 - **`legacy-type-mapping`** — Adding / removing non-indexed fields is fine;
-  changing an indexed field's type requires rebuilding the index.
+  renaming / retyping an **indexed** field needs a value-preserving mapping
+  or a `reindex()` on first start.
 - **`custom-type-handlers`** — GigaMap's own types are auto-registered; only
   the entity classes may need handlers.
 
 ## Deeper lookups (on-demand)
 
-- **Load `references/api-catalogue.md`** when you need a method overload
-  or factory variant not in the in-line tables — e.g. additional
-  `GigaQuery` terminal ops, less common indexer `.Abstract<>` overloads,
-  spatial operators beyond `at`/`near`/`withinBox`, `EntityIdMatcher`
-  factory variants.
-- **Load `references/query-dsl.md`** when writing a query that goes
-  beyond the Pattern G examples — predicates on derived keys, complex
-  boolean trees, `notIn` semantics, scored-result chaining order.
-- **Load `references/lucene.md`** when wiring or operating Lucene full-text
-  search — Maven deps, `DocumentPopulator` shape, query syntax beyond
-  `field:term`, sub-query score handling, backup / lifecycle / restart.
+- **Load `references/api-catalogue.md`** for method overloads and factory
+  variants — `GigaQuery` terminal ops, `BitmapIndices` lifecycle, Lucene /
+  vector factories, presets, `EntityIdMatcher`.
+- **Load `references/query-dsl.md`** when a query goes beyond Pattern G —
+  string / temporal operators, `notIn` semantics, pagination, scored-result
+  chaining order.
+- **Load `references/lucene.md`** when wiring or operating Lucene — Maven
+  deps, `DocumentPopulator`, in-graph vs MMap directories, commits, syntax,
+  repair.
+- **Load `references/index-locations.md`** when a storage with on-disk
+  vector or MMap Lucene indices is moved, copied, restored or deployed —
+  `IndexLocation.Named`, `IndexLocations.bind`, `changeIndexLocation`.
 - **Load `references/vector-deep-dive.md`** when **designing** a vector
-  index — picking embedded vs computed mode, similarity function,
-  HNSW tuning, recall measurement, sharding past 2.1B vectors.
-- **Load `references/vector-operations.md`** when **operating** a vector
-  index — full `VectorIndexConfiguration` parameter table, restart-safe
-  wiring, on-disk format + incremental mode, PQ compression, background
-  tasks + eventual-indexing consistency, production checklist.
-- **Load `references/examples-expanded.md`** when you want a complete
-  end-to-end program template — entity + indices + root wiring +
-  storage start + queries, including the embedded-mode RAG retrieval
-  pattern.
+  index — embedded vs computed, vectorizer contract, similarity function,
+  HNSW tuning, recall measurement, sharding past 2.1B.
+- **Load `references/vector-operations.md`** when **operating** one — full
+  parameter table, where the vectors live, files on disk, NVQ / PQ,
+  background tasks, 4.x upgrade, production checklist.
+- **Load `references/examples-expanded.md`** for complete program
+  templates — entity + indices + root wiring + storage + queries, embedded
+  RAG retrieval, computed vectorizer with a kept vector file.
 - **Load `references/pitfalls-deep-dive.md`** when diagnosing a bug —
-  `BinaryPersistenceException`, `UniqueConstraintViolationException`,
-  stale query results after a setter call, reader-thread deadlock,
-  vectorizer null / thread-safety / dimension-mismatch errors.
+  `BinaryPersistenceException`, stale results after a setter call, starved
+  writers / self-deadlock, vectorizer null / buffer / dimension errors,
+  re-vectorization at every start.
 
 ## Upstream sources
 
-- `docs/modules/gigamap/pages/index.adoc`, `getting-started.adoc`, `crud.adoc`,
-  `persistence.adoc`.
-- `docs/modules/gigamap/pages/queries/*.adoc`.
-- `docs/modules/gigamap/pages/indexing/bitmap/*.adoc`,
-  `.../lucene/*.adoc`, `.../jvector/*.adoc`, `.../spatial/*.adoc`.
-- `gigamap/` module source tree.
+- `docs/modules/gigamap/pages/{index,getting-started,crud,persistence,constraints}.adoc`,
+  `queries/*.adoc`, `indexing/{annotations,index-locations}.adoc`,
+  `indexing/{bitmap,lucene,jvector,spatial}/*.adoc`.
+- `gigamap/{gigamap,lucene,jvector,codegen}` module source trees.
 - `examples/gigamap/` — upstream examples.

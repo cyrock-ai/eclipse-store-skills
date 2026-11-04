@@ -1,5 +1,7 @@
 # GigaQuery DSL reference
 
+Verified against Eclipse Store 4.3.0.
+
 ## Basic conditions
 
 | Operator | All indexers? | Example |
@@ -10,19 +12,36 @@
 | `.not(key)` | Yes | `lastName.not("Smith")` |
 | `.notIn(k1, k2, ...)` | Yes | `lastName.notIn("Smith", "Jones")` |
 
+## String conditions (`IndexerString`)
+
+| Operator | Example |
+|---|---|
+| `.contains(s)` / `.containsIgnoreCase(s)` | `lastName.contains("mit")` |
+| `.startsWith(s)` / `.startsWithIgnoreCase(s)` | `lastName.startsWith("Sm")` |
+| `.endsWith(s)` / `.endsWithIgnoreCase(s)` | `email.endsWith("@example.com")` |
+| `.isEmpty()` / `.isBlank()` | `nickname.isBlank()` |
+
+Predicate-based (`is(predicate)`, `contains`, …) conditions scan the index
+keys; they are index-driven but not O(1). `BinaryIndexerString` supports
+equality only.
+
 ## Numeric / temporal conditions
 
 | Operator | Indexers | Example |
 |---|---|---|
-| `.greaterThan(key)` | numeric/temporal | `price.greaterThan(100)` |
-| `.greaterThanEqual(key)` | numeric/temporal | `age.greaterThanEqual(18)` |
-| `.lessThan(key)` | numeric/temporal | `price.lessThan(50)` |
-| `.lessThanEqual(key)` | numeric/temporal | `price.lessThanEqual(50)` |
-| `.between(low, high)` | numeric/temporal | `price.between(10, 100)` |
-| `.before(moment)` | temporal | `birthDate.before(LocalDate.of(2000,1,1))` |
-| `.after(moment)` | temporal | `birthDate.after(LocalDate.of(1990,1,1))` |
-| `.isYear(y)` | LocalDate/LocalDateTime | `birthDate.isYear(1990)` |
-| `.isMonth(m)` | LocalDate/LocalDateTime | `birthDate.isMonth(Month.JUNE)` |
+| `.greaterThan(key)` | numeric (`Indexer*`, `ByteIndexer*`, `IndexerComparing`) / temporal | `price.greaterThan(100)` |
+| `.greaterThanEqual(key)` | numeric / temporal | `age.greaterThanEqual(18)` |
+| `.lessThan(key)` | numeric / temporal | `price.lessThan(50)` |
+| `.lessThanEqual(key)` | numeric / temporal | `price.lessThanEqual(50)` |
+| `.between(low, high)` | numeric / temporal (inclusive) | `price.between(10, 100)` |
+| `.before(moment)` | temporal (exclusive) | `birthDate.before(LocalDate.of(2000,1,1))` |
+| `.after(moment)` | temporal (exclusive) | `birthDate.after(LocalDate.of(1990,1,1))` |
+| `.isYear(int)` / `.isYear(IntPredicate)` | LocalDate / LocalDateTime | `birthDate.isYear(1990)` |
+| `.isMonth(int)` / `.isMonth(IntPredicate)` | LocalDate / LocalDateTime | `birthDate.isMonth(6)` — an `int` 1–12, not `java.time.Month` |
+| `.isDay(int)` / `.isDay(IntPredicate)` | LocalDate / LocalDateTime | `birthDate.isDay(d -> d > 15)` |
+
+`BinaryIndexer*` (high cardinality) support equality only; use `ByteIndexer*`
+for high-cardinality numerics that need ranges.
 
 ## Multi-value conditions
 
@@ -35,6 +54,7 @@ Indexers based on `IndexerMultiValue`:
 | `.all(k1, k2, ...)` | Collection contains all. |
 | `.not(key)` | Collection does not contain. |
 | `.notIn(k1, k2, ...)` | Collection contains none. |
+| `.is(predicate)` | Any key matches the predicate. |
 
 ## Spatial conditions
 
@@ -88,6 +108,7 @@ billing zones, driving-range estimates).
 | `.or(condition)` | `a.is("x").or(a.is("y"))` |
 
 Conditions combine into a single argument for `gigaMap.query(cond)`.
+`and` / `or` return a new condition; the receiver is not modified.
 
 ## Sub-query combination
 
@@ -101,18 +122,22 @@ map.query(status.is("PUBLISHED"))
    .and(EntityIdMatcher.Ascending(42, 99));
 ```
 
-All combinations are logical AND.
+All combinations are logical AND. Two queries on the same map intersect the
+same way: `adults.and(berliners).count()`.
 
 ## Query result methods
 
 | Method | Returns | Notes |
 |---|---|---|
-| `toList()` | `List<E>` | Materialize. |
+| `toList()` / `toList(limit)` / `toList(offset, limit)` | `List<E>` | Materialize all / first `limit` / a page. There is no `skip` / `limit` on the query. |
+| `toSet()` / `toSet(limit)` / `toSet(offset, limit)` | `Set<E>` | Same, as a set. |
 | `count()` | `long` | No entity load. |
 | `findFirst()` | `Optional<E>` | First hit. |
 | `stream()` | `Stream<E>` | Close! |
-| `iterator()` | `Iterator<E>` | Close! |
-| `skip(n).limit(m)` | `GigaQuery<E>` | Pagination. |
+| `iterator()` | `GigaIterator<E>` | Close! (auto-closes when fully drained) |
+| `iterateIndexed((id, e) -> …)` / `executeWithId(consumer)` | — | Hits with their entity id. |
+| `idStart(id)` / `idBound(id)` / `idRange(start, bound)` | `GigaQuery<E>` | Restrict to an entity-id window. |
+| `execute(consumer1, consumer2, …)` | — | Parallel: one consumer per thread; create the query with `map.query(IterationThreadProvider.Creating(ThreadCountProvider.Adaptive()))`. |
 
 ## Scored results (Lucene, vector)
 
@@ -124,8 +149,10 @@ for (var entry : luceneIndex.search("eclipse", 20)) {
 }
 ```
 
-`ScoredSearchResult.and(GigaQuery)` returns another `ScoredSearchResult` — the
-score order is preserved.
+`ScoredSearchResult.and(SubQuery)` returns another `ScoredSearchResult` — the
+score order is preserved. `gigaQuery.and(scoredResult)` drops the scores.
+`entry.entityId()` is the id for `map.update(entityId, …)` on maps without a
+bitmap index.
 
 ## Use patterns
 
@@ -135,12 +162,22 @@ score order is preserved.
 map.query().toList();   // all entries
 ```
 
-Discouraged for large maps — prefer an explicit condition or use `iterator()`.
+Discouraged for large maps — prefer an explicit condition, `toList(offset, limit)`,
+or `iterator()`.
 
 ### Unused result
 
 `map.query(...)` without consuming is harmless — nothing is computed until a
 terminal method (`.toList`, `.count`, `.iterator`).
+
+### Query by index name
+
+For annotation-generated indices without a constant:
+
+```java
+map.query("lastName", "Smith");                 // String index by name
+map.query(idx.getIndexerString("lastName").startsWith("Sm"));   // via GeneratedIndices
+```
 
 ### Static import
 
